@@ -1,0 +1,31 @@
+# Manual-RAG Diagnostic Assistant — Dependencies
+# ================================================
+
+# --- Core Framework ---
+streamlit>=1.32.0
+
+# --- PDF & Document Processing ---
+pymupdf>=1.24.0            # Fast PDF text/image extraction
+pymupdf4llm>=0.0.10        # PDF-to-markdown for LLM consumption
+pdfplumber>=0.11.0          # Table extraction from PDFs
+Pillow>=10.0.0              # Image handling
+
+# --- OCR (diagrams, scanned pages) ---
+pytesseract>=0.3.10         # Tesseract OCR wrapper
+# System dependency: sudo apt-get install tesseract-ocr
+
+# --- Text Chunking ---
+langchain-text-splitters>=0.0.1
+
+# --- Embeddings (local, offline) ---
+sentence-transformers>=2.7.0
+
+# --- Vector Database (local, embedded) ---
+chromadb>=0.5.0
+
+# --- Local LLM Client ---
+ollama>=0.2.0               # Python client for Ollama local LLM server
+
+# --- Utilities ---
+pandas>=2.0.0
+numpy>=1.24.0
