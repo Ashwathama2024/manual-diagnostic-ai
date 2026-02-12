@@ -278,9 +278,7 @@ Provide your analysis based STRICTLY on the manual data above. Cite every key cl
 
     client = ollama.Client(host=OLLAMA_BASE_URL)
 
-    logger.info(f"Sending to Ollama model '{model}':")
-    logger.info(f"System Prompt:\n{SYSTEM_PROMPT}")
-    logger.info(f"User Message:\n{user_message}")
+    logger.info(f"Querying Ollama model '{model}' with {len(retrieved_chunks)} context chunks")
 
     response_stream = client.chat(
         model=model,
@@ -291,12 +289,9 @@ Provide your analysis based STRICTLY on the manual data above. Cite every key cl
         stream=True,
     )
     for chunk in response_stream:
-        logger.debug(f"Raw chunk: {chunk}") # New debug line
         if isinstance(chunk, dict) and "message" in chunk and "content" in chunk["message"]:
-            logger.debug(f"Received chunk: {chunk['message']['content']}")
             yield chunk["message"]["content"]
         elif hasattr(chunk, 'message') and hasattr(chunk.message, 'content'):
-            logger.debug(f"Received chunk (legacy): {chunk.message.content}")
             yield chunk.message.content
         else:
             logger.warning(f"Unexpected chunk format: {chunk}")

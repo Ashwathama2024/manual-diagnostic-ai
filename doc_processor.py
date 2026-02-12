@@ -932,6 +932,7 @@ def process_pdf(
     use_vision: bool = True,
     vision_model: str = None,
     image_base_dir: str = None,
+    source_filename: str = "",
 ) -> list[DocumentChunk]:
     """
     Full processing pipeline for a single PDF manual.
@@ -953,16 +954,18 @@ def process_pdf(
         use_vision: If True, use Ollama vision model for diagram description
         vision_model: Ollama vision model name (default: env VISION_MODEL or "minicpm-v")
         image_base_dir: Root dir for saved images (default: env IMAGE_STORE_DIR or "./images")
+        source_filename: Original filename of the uploaded PDF (for citations).
+                         If empty, falls back to os.path.basename(pdf_path).
 
     Returns:
         List of DocumentChunk objects with section-aware metadata
     """
-    filename = os.path.basename(pdf_path)
+    filename = source_filename or os.path.basename(pdf_path)
     all_chunks: list[DocumentChunk] = []
 
     def _progress(stage, pct):
         if progress_callback:
-            progress_callback(stage, pct)
+            progress_callback(stage, min(pct, 0.99))
 
     # --- Stage 1: Text + structure extraction ---
     _progress("Extracting text & structure...", 0.0)
@@ -1054,7 +1057,7 @@ def process_pdf(
         ollama_base_url=_ollama_url,
         image_base_dir=_image_dir,
         use_vision=use_vision,
-        progress_callback=lambda stage, pct: _progress(stage, 0.70 + pct * 0.25),
+        progress_callback=lambda stage, pct: _progress(stage, min(0.70 + pct * 0.25, 0.95)),
     )
 
     vision_count = sum(1 for r in image_results if r["method"] == "vision")

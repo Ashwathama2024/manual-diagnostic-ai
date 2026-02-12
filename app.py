@@ -279,7 +279,7 @@ with tab_chat:
         else:
             # --- Chat using Streamlit native chat components ---
             for msg in st.session_state["chat_history"]:
-                with st.chat_message(msg["role"], avatar="wrench" if msg["role"] == "assistant" else None):
+                with st.chat_message(msg["role"], avatar="🛠️" if msg["role"] == "assistant" else None):
                     st.markdown(msg["content"])
                     # Show source references for assistant messages
                     if msg["role"] == "assistant" and msg.get("sources"):
@@ -537,6 +537,7 @@ with tab_upload:
                             chunk_overlap=st.session_state["chunk_overlap"],
                             progress_callback=update_progress,
                             use_vision=st.session_state["use_vision"],
+                            source_filename=uploaded_file.name,
                         )
 
                         # Step 2: Embed + store (automatic)
