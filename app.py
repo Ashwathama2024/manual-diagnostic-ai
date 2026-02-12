@@ -321,7 +321,7 @@ with tab_chat:
                 ]
 
                 # Generate streaming response
-                with st.chat_message("assistant", avatar="wrench"):
+                with st.chat_message("assistant", avatar="🛠️"):
                     try:
                         response_text = st.write_stream(
                             generate_response(

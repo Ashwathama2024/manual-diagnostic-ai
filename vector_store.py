@@ -28,6 +28,7 @@ from typing import Optional
 
 import chromadb
 from chromadb.config import Settings
+from chromadb.api.types import EmbeddingFunction  # Import the base class
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ DEFAULT_EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-small-en-v
 # Embedding wrapper
 # ---------------------------------------------------------------------------
 
-class LocalEmbeddingFunction:
+class LocalEmbeddingFunction(EmbeddingFunction): # Inherit from EmbeddingFunction
     """
     Wraps sentence-transformers for ChromaDB.
     Model is downloaded once (~90MB), then runs 100% offline.
@@ -69,6 +70,9 @@ class LocalEmbeddingFunction:
         self._load_model()
         embeddings = self._model.encode(input, show_progress_bar=False, normalize_embeddings=True)
         return embeddings.tolist()
+
+    def name(self) -> str:
+        return self.model_name
 
     @property
     def dimension(self) -> int:
