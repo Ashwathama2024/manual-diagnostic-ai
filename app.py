@@ -135,6 +135,7 @@ def init_session_state():
         "chunk_size": 1000,
         "chunk_overlap": 200,
         "n_results": 8,
+        "use_vision": True,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -228,6 +229,13 @@ def render_sidebar():
             )
             st.session_state["n_results"] = st.slider(
                 "Context Chunks", 1, 15, st.session_state["n_results"]
+            )
+            st.session_state["use_vision"] = st.checkbox(
+                "Use Vision Model for Diagrams",
+                value=st.session_state["use_vision"],
+                help="Uses Ollama vision model (minicpm-v/llava) to describe diagrams. "
+                     "Produces much better results but slower on CPU (~30-60s per image). "
+                     "Uncheck for fast OCR-only processing."
             )
 
 render_sidebar()
@@ -478,8 +486,9 @@ with tab_upload:
         **What gets extracted automatically:**
         - Text content (procedures, descriptions, instructions)
         - Tables (clearances, specs, tolerances, torque values)
-        - Images / Diagrams (OCR text extraction)
+        - Images / Diagrams (AI vision description with surrounding text context)
         - Section structure (chapters, sections, subsections for precise citations)
+        - Diagram images saved to disk for reference
         """)
 
         uploaded_files = st.file_uploader(
@@ -527,6 +536,7 @@ with tab_upload:
                             chunk_size=st.session_state["chunk_size"],
                             chunk_overlap=st.session_state["chunk_overlap"],
                             progress_callback=update_progress,
+                            use_vision=st.session_state["use_vision"],
                         )
 
                         # Step 2: Embed + store (automatic)

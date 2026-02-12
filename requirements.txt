@@ -26,6 +26,11 @@ chromadb>=0.5.0
 # --- Local LLM Client ---
 ollama>=0.2.0               # Python client for Ollama local LLM server
 
+# --- Vision Model for Diagrams (optional but recommended) ---
+# System dependency: ollama pull minicpm-v
+# Alternatives: ollama pull llava, ollama pull llava-phi3, ollama pull llama3.2-vision
+# Falls back to Tesseract OCR if no vision model is available
+
 # --- Utilities ---
 pandas>=2.0.0
 numpy>=1.24.0

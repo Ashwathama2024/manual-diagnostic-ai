@@ -50,6 +50,7 @@ class DocumentChunk:
     section_hierarchy: str = ""   # e.g., "Chapter 3 > Fuel System > Injection Timing"
     chapter: str = ""             # e.g., "Chapter 3: Fuel System"
     chunk_id: str = ""
+    image_path: str = ""           # path to saved image file (for image/diagram chunks)
     metadata: dict = field(default_factory=dict)
 
     def __post_init__(self):
@@ -238,6 +239,238 @@ def ocr_image(image: Image.Image) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Image saving
+# ---------------------------------------------------------------------------
+
+def save_image_to_disk(
+    image_bytes: bytes,
+    equipment_id: str,
+    source_file: str,
+    page_number: int,
+    image_index: int,
+    base_dir: str = "./images",
+) -> str:
+    """
+    Save an extracted image to disk in an organized directory structure.
+
+    Path: {base_dir}/{equipment_id}/{source_stem}_page{N}_img{M}.png
+
+    Returns the relative path to the saved image, or "" on failure.
+    """
+    try:
+        # Sanitize source filename for use in path
+        stem = os.path.splitext(os.path.basename(source_file))[0]
+        stem = re.sub(r'[^\w\-.]', '_', stem)
+
+        # Build directory
+        equip_dir = os.path.join(base_dir, equipment_id)
+        os.makedirs(equip_dir, exist_ok=True)
+
+        # Build filename
+        filename = f"{stem}_page{page_number}_img{image_index}.png"
+        filepath = os.path.join(equip_dir, filename)
+
+        # Convert to PNG via PIL (handles JPEG, JPEG2000, etc.)
+        image = Image.open(io.BytesIO(image_bytes))
+        if image.mode in ("CMYK", "P"):
+            image = image.convert("RGB")
+        image.save(filepath, format="PNG")
+
+        logger.info(f"Saved image: {filepath}")
+        return filepath
+    except Exception as e:
+        logger.warning(f"Failed to save image to disk: {e}")
+        return ""
+
+
+# ---------------------------------------------------------------------------
+# Surrounding text extraction (spatial proximity)
+# ---------------------------------------------------------------------------
+
+def extract_surrounding_text(
+    page_dict_blocks: list[dict],
+    image_bbox: tuple,
+    proximity_px: int = 80,
+) -> dict:
+    """
+    Find text blocks spatially adjacent to an image on a PDF page.
+
+    Uses bounding-box geometry to find text above, below, and the likely
+    caption for a diagram.
+
+    Args:
+        page_dict_blocks: blocks from page.get_text("dict")["blocks"]
+        image_bbox: (x0, y0, x1, y1) of the image on the page
+        proximity_px: max pixel distance to consider text "near" the image
+
+    Returns:
+        {"above": str, "below": str, "caption": str}
+    """
+    if not page_dict_blocks or not image_bbox:
+        return {"above": "", "below": "", "caption": ""}
+
+    img_x0, img_y0, img_x1, img_y1 = image_bbox
+
+    above_blocks = []
+    below_blocks = []
+
+    for block in page_dict_blocks:
+        # Only consider text blocks (type 0), skip image blocks (type 1)
+        if block.get("type", 0) != 0:
+            continue
+
+        bx0, by0, bx1, by1 = block["bbox"]
+
+        # Check horizontal overlap (block and image share some x-range)
+        h_overlap = (bx0 < img_x1) and (bx1 > img_x0)
+        if not h_overlap:
+            continue
+
+        # Extract text from block's lines → spans
+        block_text = ""
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                block_text += span.get("text", "") + " "
+        block_text = block_text.strip()
+        if not block_text:
+            continue
+
+        # Text ABOVE the image: block's bottom edge (by1) is above image top (img_y0)
+        # and within proximity
+        if by1 <= img_y0 and (img_y0 - by1) <= proximity_px:
+            above_blocks.append({
+                "text": block_text,
+                "distance": img_y0 - by1,
+            })
+
+        # Text BELOW the image: block's top edge (by0) is below image bottom (img_y1)
+        # and within proximity
+        if by0 >= img_y1 and (by0 - img_y1) <= proximity_px:
+            below_blocks.append({
+                "text": block_text,
+                "distance": by0 - img_y1,
+            })
+
+    # Sort by distance (closest first)
+    above_blocks.sort(key=lambda x: x["distance"])
+    below_blocks.sort(key=lambda x: x["distance"])
+
+    above_text = " ".join(b["text"] for b in above_blocks[:3])
+    below_text = " ".join(b["text"] for b in below_blocks[:3])
+
+    # Caption = the single closest text below (likely "Fig. X.Y — ...")
+    caption = below_blocks[0]["text"] if below_blocks else ""
+
+    return {
+        "above": above_text.strip(),
+        "below": below_text.strip(),
+        "caption": caption.strip(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Vision model image description
+# ---------------------------------------------------------------------------
+
+# Domain-specific prompt for describing engineering diagrams
+VISION_PROMPT_ENGINEERING = """You are analyzing a technical diagram from an industrial/marine equipment manual.
+
+Describe this image in detail for a diagnostic knowledge base. Include:
+1. WHAT it shows: cross-section, schematic, P&ID, wiring diagram, assembly drawing, exploded view, flow diagram, or photograph?
+2. COMPONENTS: List every labeled component, part number, or callout visible.
+3. CONNECTIONS: How components connect — flow paths, piping, wiring, mechanical linkages.
+4. MEASUREMENTS: Any dimensions, tolerances, clearances, pressures, or temperatures shown.
+5. OPERATING CONDITIONS: Normal values, alarm limits, or set points if visible.
+6. CONTEXT: What system or subsystem this relates to (fuel, cooling, lubrication, hydraulic, electrical, etc.).
+
+Be specific and technical. Use the exact labels and numbers shown in the diagram."""
+
+
+def describe_image_with_vision(
+    image_bytes: bytes,
+    surrounding_context: str = "",
+    vision_model: str = "minicpm-v",
+    ollama_base_url: str = "http://localhost:11434",
+) -> tuple:
+    """
+    Use an Ollama vision model to describe a technical diagram.
+    Falls back to Tesseract OCR if vision model is unavailable.
+
+    Args:
+        image_bytes: Raw image bytes (PNG/JPEG)
+        surrounding_context: Text found near the image for prompt context
+        vision_model: Ollama vision model name
+        ollama_base_url: Ollama server URL
+
+    Returns:
+        (description: str, method: str) where method is "vision", "ocr", or "none"
+    """
+    import base64
+
+    # --- Try vision model first ---
+    try:
+        import ollama as ollama_lib
+
+        b64_image = base64.b64encode(image_bytes).decode("utf-8")
+
+        # Build prompt with surrounding context if available
+        prompt = VISION_PROMPT_ENGINEERING
+        if surrounding_context:
+            context_snippet = surrounding_context[:500]
+            prompt = (
+                f"This diagram appears in a section about: {context_snippet}\n\n"
+                f"{prompt}"
+            )
+
+        client = ollama_lib.Client(host=ollama_base_url)
+        response = client.chat(
+            model=vision_model,
+            messages=[{
+                "role": "user",
+                "content": prompt,
+                "images": [b64_image],
+            }],
+        )
+
+        # Extract response text (handle both dict and object formats)
+        description = ""
+        if isinstance(response, dict):
+            description = response.get("message", {}).get("content", "")
+        elif hasattr(response, "message"):
+            description = response.message.content or ""
+
+        if description and len(description) > 20:
+            logger.info(f"Vision model described image ({len(description)} chars)")
+            return description.strip(), "vision"
+        else:
+            logger.warning("Vision model returned empty/short response, falling back to OCR")
+
+    except ImportError:
+        logger.warning("ollama package not installed — falling back to OCR")
+    except Exception as e:
+        error_str = str(e).lower()
+        if "connect" in error_str or "refused" in error_str:
+            logger.warning("Ollama not running — falling back to OCR")
+        elif "not found" in error_str:
+            logger.warning(f"Vision model '{vision_model}' not found — falling back to OCR. "
+                           f"Install with: ollama pull {vision_model}")
+        else:
+            logger.warning(f"Vision model failed ({e}) — falling back to OCR")
+
+    # --- Fallback: Tesseract OCR ---
+    try:
+        pil_image = Image.open(io.BytesIO(image_bytes))
+        ocr_text = ocr_image(pil_image)
+        if ocr_text and len(ocr_text) > 10:
+            logger.info(f"OCR fallback produced {len(ocr_text)} chars")
+            return ocr_text, "ocr"
+    except Exception as e:
+        logger.warning(f"OCR fallback also failed: {e}")
+
+    return "", "none"
+
+
+# ---------------------------------------------------------------------------
 # PDF Text Extraction with structure (PyMuPDF)
 # ---------------------------------------------------------------------------
 
@@ -281,13 +514,187 @@ def extract_text_with_structure(pdf_path: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# PDF Image Extraction + OCR (PyMuPDF)
+# PDF Image Extraction — Vision-Aware Pipeline
 # ---------------------------------------------------------------------------
 
-def extract_images_pymupdf(pdf_path: str, min_size: int = 100) -> list[dict]:
+def extract_images_with_vision(
+    pdf_path: str,
+    equipment_id: str,
+    headings: list = None,
+    page_offsets: list = None,
+    min_size: int = 100,
+    vision_model: str = "minicpm-v",
+    ollama_base_url: str = "http://localhost:11434",
+    image_base_dir: str = "./images",
+    use_vision: bool = True,
+    progress_callback=None,
+) -> list[dict]:
     """
-    Extract images from PDF using PyMuPDF, then OCR them.
-    Returns list of {page: int, text: str, image_index: int}.
+    Extract images from PDF, save to disk, describe with vision model.
+
+    For each image:
+      1. Extract raw bytes from PDF (PyMuPDF)
+      2. Get bounding box position on page
+      3. Find surrounding text blocks (spatial proximity)
+      4. Save image to disk as PNG
+      5. Describe with Ollama vision model (or OCR fallback)
+      6. Attach section metadata from heading detection
+
+    Args:
+        pdf_path: Path to the PDF
+        equipment_id: Equipment ID for directory structure
+        headings: Detected section headings (from extract_text_with_structure)
+        page_offsets: (page_num, text_offset) tuples
+        min_size: Minimum image dimension in pixels to process
+        vision_model: Ollama vision model name
+        ollama_base_url: Ollama server URL
+        image_base_dir: Root directory for saved images
+        use_vision: If False, skip vision model and use OCR only
+        progress_callback: Optional callable(stage, progress_float)
+
+    Returns:
+        List of dicts with keys: page, text, image_index, image_path,
+        surrounding_text, section_title, section_hierarchy, chapter, method
+    """
+    results = []
+    source_file = os.path.basename(pdf_path)
+    seen_hashes = set()  # Dedup by image content hash
+
+    try:
+        doc = fitz.open(pdf_path)
+        total_pages = len(doc)
+
+        for page_num in range(total_pages):
+            page = doc[page_num]
+            images = page.get_images(full=True)
+
+            if not images:
+                continue
+
+            # Get all text blocks on this page (for surrounding text extraction)
+            page_dict = page.get_text("dict")
+            text_blocks = page_dict.get("blocks", [])
+
+            for img_idx, img_info in enumerate(images):
+                xref = img_info[0]
+
+                try:
+                    # --- Extract raw image bytes ---
+                    base_image = doc.extract_image(xref)
+                    image_bytes = base_image["image"]
+
+                    # --- Size check ---
+                    pil_image = Image.open(io.BytesIO(image_bytes))
+                    if pil_image.width < min_size or pil_image.height < min_size:
+                        continue
+
+                    # --- Dedup by content hash ---
+                    img_hash = hashlib.md5(image_bytes).hexdigest()
+                    if img_hash in seen_hashes:
+                        continue
+                    seen_hashes.add(img_hash)
+
+                    # --- Get image bounding box on page ---
+                    image_bbox = None
+                    try:
+                        rects = page.get_image_rects(xref)
+                        if rects:
+                            r = rects[0]  # Use first occurrence
+                            image_bbox = (r.x0, r.y0, r.x1, r.y1)
+                    except Exception:
+                        pass  # Some PDFs don't support this
+
+                    # --- Extract surrounding text ---
+                    surrounding = {"above": "", "below": "", "caption": ""}
+                    if image_bbox and text_blocks:
+                        surrounding = extract_surrounding_text(
+                            text_blocks, image_bbox, proximity_px=80
+                        )
+
+                    surrounding_combined = ""
+                    if surrounding["caption"]:
+                        surrounding_combined = surrounding["caption"]
+                    if surrounding["above"]:
+                        surrounding_combined = (
+                            surrounding["above"] + " " + surrounding_combined
+                        ).strip()
+
+                    # --- Save image to disk ---
+                    image_path = save_image_to_disk(
+                        image_bytes=image_bytes,
+                        equipment_id=equipment_id,
+                        source_file=source_file,
+                        page_number=page_num + 1,
+                        image_index=img_idx,
+                        base_dir=image_base_dir,
+                    )
+
+                    # --- Describe image (vision or OCR) ---
+                    if use_vision:
+                        description, method = describe_image_with_vision(
+                            image_bytes=image_bytes,
+                            surrounding_context=surrounding_combined,
+                            vision_model=vision_model,
+                            ollama_base_url=ollama_base_url,
+                        )
+                    else:
+                        ocr_text = ocr_image(pil_image)
+                        description = ocr_text if ocr_text and len(ocr_text) > 10 else ""
+                        method = "ocr" if description else "none"
+
+                    if not description:
+                        continue  # Nothing useful extracted
+
+                    # --- Section metadata ---
+                    section_title = ""
+                    section_hierarchy = ""
+                    chapter = ""
+                    if headings and page_offsets:
+                        # Find text offset for this page
+                        img_offset = 0
+                        for pnum, poff in page_offsets:
+                            if pnum == page_num + 1:
+                                img_offset = poff
+                                break
+                        section_title, section_hierarchy = get_section_for_position(
+                            headings, img_offset
+                        )
+                        chapter = get_chapter_for_position(headings, img_offset)
+
+                    results.append({
+                        "page": page_num + 1,
+                        "text": description,
+                        "image_index": img_idx,
+                        "image_path": image_path,
+                        "surrounding_text": surrounding_combined,
+                        "section_title": section_title,
+                        "section_hierarchy": section_hierarchy,
+                        "chapter": chapter,
+                        "method": method,
+                    })
+
+                    if progress_callback:
+                        pct = (page_num + 1) / total_pages
+                        progress_callback(
+                            f"Image {len(results)}: page {page_num+1} ({method})", pct
+                        )
+
+                except Exception as e:
+                    logger.warning(
+                        f"Image extraction failed page {page_num+1} img {img_idx}: {e}"
+                    )
+
+        doc.close()
+    except Exception as e:
+        logger.error(f"Image extraction failed for {pdf_path}: {e}")
+
+    return results
+
+
+def _extract_images_legacy(pdf_path: str, min_size: int = 100) -> list[dict]:
+    """
+    Legacy image extraction — Tesseract OCR only.
+    Kept as internal fallback reference. Use extract_images_with_vision() instead.
     """
     results = []
     try:
@@ -522,6 +929,9 @@ def process_pdf(
     chunk_size: int = 1000,
     chunk_overlap: int = 200,
     progress_callback=None,
+    use_vision: bool = True,
+    vision_model: str = None,
+    image_base_dir: str = None,
 ) -> list[DocumentChunk]:
     """
     Full processing pipeline for a single PDF manual.
@@ -530,7 +940,7 @@ def process_pdf(
       1. Extract text with structure detection (PyMuPDF)
       2. Detect section headings and build hierarchy
       3. Extract tables (pdfplumber)
-      4. Extract images → OCR
+      4. Extract images → Vision model description (or OCR fallback)
       5. Semantic chunking with section context
       6. Return DocumentChunk list with full references
 
@@ -540,6 +950,9 @@ def process_pdf(
         chunk_size: Target chunk size in characters
         chunk_overlap: Overlap between chunks
         progress_callback: Optional callable(stage: str, progress: float)
+        use_vision: If True, use Ollama vision model for diagram description
+        vision_model: Ollama vision model name (default: env VISION_MODEL or "minicpm-v")
+        image_base_dir: Root dir for saved images (default: env IMAGE_STORE_DIR or "./images")
 
     Returns:
         List of DocumentChunk objects with section-aware metadata
@@ -624,43 +1037,89 @@ def process_pdf(
                 metadata={"table_index": table_data["table_index"]},
             ))
 
-    # --- Stage 4: Image OCR ---
-    _progress("Processing images (OCR)...", 0.75)
-    images = extract_images_pymupdf(pdf_path)
-    logger.info(f"OCR'd {len(images)} images")
+    # --- Stage 4: Image Vision Processing ---
+    _progress("Processing images (vision)...", 0.70)
 
-    for img_data in images:
-        img_offset = 0
-        for pnum, poff in page_offsets:
-            if pnum == img_data["page"]:
-                img_offset = poff
-                break
-        section_title, hierarchy = get_section_for_position(headings, img_offset)
-        chapter = get_chapter_for_position(headings, img_offset)
+    # Resolve vision config from params or environment
+    _vision_model = vision_model or os.environ.get("VISION_MODEL", "minicpm-v")
+    _image_dir = image_base_dir or os.environ.get("IMAGE_STORE_DIR", "./images")
+    _ollama_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 
+    image_results = extract_images_with_vision(
+        pdf_path=pdf_path,
+        equipment_id=equipment_id,
+        headings=headings,
+        page_offsets=page_offsets,
+        vision_model=_vision_model,
+        ollama_base_url=_ollama_url,
+        image_base_dir=_image_dir,
+        use_vision=use_vision,
+        progress_callback=lambda stage, pct: _progress(stage, 0.70 + pct * 0.25),
+    )
+
+    vision_count = sum(1 for r in image_results if r["method"] == "vision")
+    ocr_count = sum(1 for r in image_results if r["method"] == "ocr")
+    logger.info(f"Processed {len(image_results)} images "
+                f"({vision_count} vision, {ocr_count} OCR fallback)")
+
+    for img_data in image_results:
+        # Build the chunk text with surrounding context + description
+        section_title = img_data.get("section_title", "")
+        hierarchy = img_data.get("section_hierarchy", "")
+        chapter = img_data.get("chapter", "")
+        method = img_data.get("method", "ocr")
+
+        # Section prefix (same pattern as text/table chunks)
         diagram_prefix = ""
         if hierarchy:
             diagram_prefix = f"[DIAGRAM in {hierarchy}]\n\n"
         elif section_title:
             diagram_prefix = f"[DIAGRAM in {section_title}]\n\n"
 
-        img_chunks = _split_section(img_data["text"], chunk_size, chunk_overlap)
+        # Combine surrounding context + description for rich embedding
+        combined_text = ""
+        surrounding = img_data.get("surrounding_text", "")
+        if surrounding:
+            combined_text += f"[SURROUNDING CONTEXT]: {surrounding}\n\n"
+
+        description = img_data.get("text", "")
+        if description:
+            label = "DIAGRAM DESCRIPTION" if method == "vision" else "DIAGRAM OCR TEXT"
+            combined_text += f"[{label}]: {description}"
+
+        if not combined_text.strip():
+            continue
+
+        full_chunk_text = diagram_prefix + combined_text
+
+        # Determine chunk type based on method used
+        chunk_type = "image_vision" if method == "vision" else "image_ocr"
+
+        # Split if too large
+        img_chunks = _split_section(full_chunk_text, chunk_size, chunk_overlap)
         for chunk_text_str in img_chunks:
             all_chunks.append(DocumentChunk(
-                text=diagram_prefix + chunk_text_str,
+                text=chunk_text_str,
                 source_file=filename,
                 page_number=img_data["page"],
-                chunk_type="image_ocr",
+                chunk_type=chunk_type,
                 equipment_id=equipment_id,
                 section_title=section_title,
                 section_hierarchy=hierarchy,
                 chapter=chapter,
-                metadata={"image_index": img_data["image_index"]},
+                image_path=img_data.get("image_path", ""),
+                metadata={
+                    "image_index": img_data["image_index"],
+                    "vision_model": _vision_model if method == "vision" else "",
+                    "has_surrounding_context": bool(surrounding),
+                    "description_method": method,
+                },
             ))
 
     _progress("Done", 1.0)
     logger.info(f"Total chunks from {filename}: {len(all_chunks)} "
-                f"({len(text_chunks)} text, {len(tables)} tables, {len(images)} images)")
+                f"({len(text_chunks)} text, {len(tables)} tables, "
+                f"{len(image_results)} images)")
     return all_chunks
 
 

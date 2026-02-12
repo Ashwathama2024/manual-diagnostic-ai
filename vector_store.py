@@ -201,7 +201,7 @@ class VectorStore:
         )
 
     def delete_equipment(self, equipment_id: str) -> bool:
-        """Delete an equipment and all its data."""
+        """Delete an equipment and all its data (collection + saved images)."""
         meta = self._registry.get(equipment_id)
         if not meta:
             return False
@@ -210,6 +210,16 @@ class VectorStore:
             self.client.delete_collection(col_name)
         except Exception as e:
             logger.warning(f"Could not delete collection {col_name}: {e}")
+
+        # Clean up saved diagram images
+        image_dir = os.path.join(
+            os.environ.get("IMAGE_STORE_DIR", "./images"),
+            equipment_id,
+        )
+        if os.path.exists(image_dir):
+            shutil.rmtree(image_dir)
+            logger.info(f"Deleted image directory: {image_dir}")
+
         del self._registry[equipment_id]
         self._save_registry()
         logger.info(f"Deleted equipment '{equipment_id}'")
@@ -252,6 +262,7 @@ class VectorStore:
                 "section_title": getattr(chunk, 'section_title', ''),
                 "section_hierarchy": getattr(chunk, 'section_hierarchy', ''),
                 "chapter": getattr(chunk, 'chapter', ''),
+                "image_path": getattr(chunk, 'image_path', ''),
             })
 
         if not documents:
@@ -337,6 +348,7 @@ class VectorStore:
                     "section_title": meta_item.get("section_title", ""),
                     "section_hierarchy": meta_item.get("section_hierarchy", ""),
                     "chapter": meta_item.get("chapter", ""),
+                    "image_path": meta_item.get("image_path", ""),
                     "distance": round(distance, 4),
                 })
 
