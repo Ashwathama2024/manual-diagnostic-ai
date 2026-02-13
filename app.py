@@ -326,12 +326,16 @@ with tab_chat:
                 with st.chat_message("user"):
                     st.markdown(user_input)
 
-                # Retrieve context
+                # --- Conversational RAG: expand query for better retrieval ---
+                conv_memory = st.session_state["conversation_memory"]
+                retrieval_query = conv_memory.expand_query_for_retrieval(user_input)
+
+                # Retrieve context using expanded query
                 try:
                     with st.spinner("Searching manuals..."):
                         results = vs.query(
                             active_eq,
-                            user_input,
+                            retrieval_query,
                             n_results=st.session_state["n_results"],
                             min_relevance=st.session_state["min_relevance"],
                         )
@@ -364,6 +368,9 @@ with tab_chat:
                     for r in results
                 ]
 
+                # --- Conversational RAG: build conversation history for LLM ---
+                conversation_context = conv_memory.get_context_for_llm(max_exchanges=3)
+
                 # Generate streaming response with timeout + fallback
                 with st.chat_message("assistant", avatar="🛠️"):
                     try:
@@ -375,6 +382,7 @@ with tab_chat:
                                 model=st.session_state["selected_model"],
                                 equipment_name=equip_info.name if equip_info else "",
                                 fallback_model=FALLBACK_MODEL,
+                                conversation_context=conversation_context,
                             )
                         else:
                             response_stream = generate_response(
@@ -382,6 +390,7 @@ with tab_chat:
                                 retrieved_chunks=results,
                                 model=st.session_state["selected_model"],
                                 equipment_name=equip_info.name if equip_info else "",
+                                conversation_context=conversation_context,
                             )
 
                         response_text = st.write_stream(response_stream)

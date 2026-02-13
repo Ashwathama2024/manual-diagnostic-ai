@@ -314,21 +314,43 @@ def get_available_models() -> list[str]:
     return status.get("models", [])
 
 
-def _build_user_message(question: str, retrieved_chunks: list[dict], equipment_name: str = "") -> str:
-    """Build the user prompt with context and question."""
+def _build_user_message(
+    question: str,
+    retrieved_chunks: list[dict],
+    equipment_name: str = "",
+    conversation_context: str = "",
+) -> str:
+    """
+    Build the user prompt with context, conversation history, and question.
+
+    Args:
+        question: The user's current question
+        retrieved_chunks: Relevant chunks from vector search
+        equipment_name: Active equipment name
+        conversation_context: Formatted conversation history from ConversationMemory
+    """
     context = build_context(retrieved_chunks)
     equipment_context = ""
     if equipment_name:
         equipment_context = f"\nYou are answering questions about: **{equipment_name}**\n"
 
-    return f"""{equipment_context}
+    # Inject conversation history if available
+    conv_block = ""
+    if conversation_context:
+        conv_block = f"""
+{conversation_context}
+
+---
+"""
+
+    return f"""{equipment_context}{conv_block}
 ## User Question
 {question}
 
 ## Manual Data
 {context}
 
-Provide your analysis based STRICTLY on the manual data above. Cite every key claim with **[Source: filename > section > Page X]**. If the data doesn't contain relevant information, clearly state that."""
+Provide your analysis based STRICTLY on the manual data above. Cite every key claim with **[Source: filename > section > Page X]**. If the data doesn't contain relevant information, clearly state that. If this is a follow-up question, use the conversation history above to understand what the user is referring to."""
 
 
 def _stream_ollama_to_queue(
@@ -381,9 +403,14 @@ def generate_response(
     first_token_timeout: int = None,
     inter_token_timeout: int = None,
     max_response_time: int = None,
+    conversation_context: str = "",
 ) -> Generator[str, None, None]:
     """
     Generate a diagnostic response using the local LLM — STREAMING with timeout.
+
+    Args:
+      conversation_context: Formatted conversation history from ConversationMemory.
+                           Injected into the user message so LLM can resolve references.
 
     Timeout behaviour:
       - first_token_timeout: max seconds to wait for the first token (default: LLM_FIRST_TOKEN_TIMEOUT)
@@ -408,7 +435,7 @@ def generate_response(
     if cancel_event is None:
         cancel_event = threading.Event()
 
-    user_message = _build_user_message(question, retrieved_chunks, equipment_name)
+    user_message = _build_user_message(question, retrieved_chunks, equipment_name, conversation_context)
 
     client = ollama.Client(host=OLLAMA_BASE_URL)
     messages = [
@@ -535,6 +562,7 @@ def generate_response_with_fallback(
     equipment_name: str = "",
     cancel_event: threading.Event = None,
     fallback_model: str = None,
+    conversation_context: str = "",
 ) -> Generator[str, None, None]:
     """
     Streaming response with automatic fallback to a smaller/faster model on timeout.
@@ -567,6 +595,7 @@ def generate_response_with_fallback(
                 model=current_model,
                 equipment_name=equipment_name,
                 cancel_event=cancel_event,
+                conversation_context=conversation_context,
             ):
                 yield token
             return  # success — exit
@@ -591,9 +620,27 @@ def generate_response_with_fallback(
 
 class ConversationMemory:
     """
-    Maintains conversation context for follow-up questions.
-    Keeps the last N exchanges for multi-turn diagnostic conversations.
+    Maintains conversation context for multi-turn diagnostic conversations.
+
+    Key capabilities:
+      1. Stores recent Q&A exchanges with source references
+      2. Detects follow-up questions (pronouns, short queries, implicit references)
+      3. Expands follow-up queries with context for better retrieval
+      4. Provides conversation history for LLM prompt injection
     """
+
+    # Words that suggest a follow-up rather than a new topic
+    FOLLOW_UP_SIGNALS = {
+        # Pronouns referencing prior context
+        "it", "its", "this", "that", "these", "those", "they", "them",
+        "the same", "the above", "the previous", "mentioned",
+        # Conversation continuers
+        "also", "what about", "how about", "and the", "regarding",
+        "what if", "but what", "so what", "then what",
+        # Short imperative follow-ups
+        "explain", "elaborate", "clarify", "expand", "detail",
+        "why", "how",
+    }
 
     def __init__(self, max_history: int = 10):
         self.history: list[dict] = []
@@ -602,17 +649,141 @@ class ConversationMemory:
     def add_exchange(self, question: str, answer: str, sources: list[dict] = None):
         self.history.append({
             "question": question,
-            "answer": answer,
+            "answer": answer[:500],  # cap stored answer length
             "sources": sources or [],
         })
         if len(self.history) > self.max_history:
             self.history = self.history[-self.max_history:]
 
-    def get_context_summary(self) -> str:
-        """Get a summary of recent conversation for context."""
+    def is_follow_up(self, query: str) -> bool:
+        """
+        Detect if a query is likely a follow-up to the previous conversation.
+
+        Heuristics:
+          - Short query (< 8 words) — likely a follow-up, not a new topic
+          - Contains pronouns/references like "it", "that", "the same"
+          - Starts with a conversational continuer like "what about", "and the"
+        """
+        if not self.history:
+            return False
+
+        query_lower = query.lower().strip()
+        words = query_lower.split()
+
+        # Short queries are almost always follow-ups when there's history
+        if len(words) <= 5:
+            return True
+
+        # Check for follow-up signal words/phrases
+        for signal in self.FOLLOW_UP_SIGNALS:
+            if signal in query_lower:
+                return True
+
+        # Starts with a question word without a clear noun → follow-up
+        # e.g., "What's the tolerance?" vs "What's the main bearing clearance?"
+        if words[0] in ("what", "how", "why", "where", "when") and len(words) < 8:
+            return True
+
+        return False
+
+    def expand_query_for_retrieval(self, query: str) -> str:
+        """
+        Expand a follow-up query with context from recent conversation
+        to improve vector search retrieval.
+
+        Strategy:
+          1. If not a follow-up → return original query unchanged
+          2. If follow-up → prepend key terms from last 1-2 exchanges
+             so the embedding captures the broader topic context
+
+        This does NOT use the LLM — it's a fast string operation.
+        The expanded query is used ONLY for vector search, not shown to the user.
+        """
+        if not self.history or not self.is_follow_up(query):
+            return query
+
+        # Extract key context from recent exchanges
+        context_terms = []
+
+        # From last question — the topic being discussed
+        last_q = self.history[-1]["question"]
+        context_terms.append(last_q)
+
+        # From last answer — extract key noun phrases (first 200 chars)
+        # This captures specific technical terms the LLM mentioned
+        last_a = self.history[-1].get("answer", "")[:200]
+        if last_a:
+            context_terms.append(last_a)
+
+        # If there's a second-to-last exchange and query is very short,
+        # include its question too for deeper context
+        if len(self.history) >= 2 and len(query.split()) <= 4:
+            prev_q = self.history[-2]["question"]
+            context_terms.append(prev_q)
+
+        # Build expanded query: original query + context
+        # Put the user's actual query first so it has highest embedding weight
+        context_snippet = " ".join(context_terms)
+        # Truncate context to avoid oversized embedding input
+        if len(context_snippet) > 500:
+            context_snippet = context_snippet[:500]
+
+        expanded = f"{query} [context: {context_snippet}]"
+
+        logger.info(
+            f"Query expanded for retrieval: '{query}' -> "
+            f"'{expanded[:120]}...' (follow-up detected)"
+        )
+        return expanded
+
+    def get_context_for_llm(self, max_exchanges: int = 3) -> str:
+        """
+        Build a structured conversation history block for the LLM prompt.
+
+        Includes recent Q&A pairs so the LLM can:
+          - Resolve pronouns ("it", "that", "the same")
+          - Maintain diagnostic reasoning across turns
+          - Avoid repeating information already given
+
+        Returns empty string if no history.
+        """
         if not self.history:
             return ""
 
+        recent = self.history[-max_exchanges:]
+        lines = [
+            "## Previous Conversation",
+            "(Use this context to understand follow-up questions. "
+            "Do not repeat information already given unless asked.)",
+            "",
+        ]
+        for i, exchange in enumerate(recent, 1):
+            lines.append(f"**User [{i}]:** {exchange['question']}")
+            # Truncate answers to keep prompt size reasonable
+            answer_preview = exchange['answer'][:400]
+            if len(exchange['answer']) > 400:
+                answer_preview += "..."
+            lines.append(f"**Assistant [{i}]:** {answer_preview}")
+
+            # Include source references so LLM can avoid re-citing same sections
+            if exchange.get("sources"):
+                src_refs = []
+                for s in exchange["sources"][:3]:  # max 3 refs per exchange
+                    hierarchy = s.get("section_hierarchy", "") or s.get("section_title", "")
+                    src_ref = s.get("source_file", "")
+                    if hierarchy:
+                        src_ref += f" > {hierarchy}"
+                    src_ref += f" > Page {s.get('page_number', '?')}"
+                    src_refs.append(src_ref)
+                lines.append(f"*Sources used: {'; '.join(src_refs)}*")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    def get_context_summary(self) -> str:
+        """Legacy method — returns brief summary for backward compatibility."""
+        if not self.history:
+            return ""
         lines = ["Previous conversation context:"]
         for i, exchange in enumerate(self.history[-3:], 1):
             lines.append(f"Q{i}: {exchange['question'][:200]}")
