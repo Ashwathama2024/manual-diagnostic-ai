@@ -84,6 +84,7 @@ RECOMMENDED_MODELS = {
         "quality": "Excellent",
         "speed": "Fast",
         "description": "Best overall — strong reasoning, fast on 16GB RAM or 8GB VRAM GPU",
+        "context_window": 131072,
     },
     "qwen2.5:7b": {
         "name": "Qwen 2.5 7B",
@@ -92,6 +93,7 @@ RECOMMENDED_MODELS = {
         "quality": "Excellent",
         "speed": "Fast",
         "description": "Top-tier for technical reasoning and structured output",
+        "context_window": 131072,
     },
     "mistral:7b": {
         "name": "Mistral 7B",
@@ -100,6 +102,7 @@ RECOMMENDED_MODELS = {
         "quality": "Very Good",
         "speed": "Fast",
         "description": "Reliable workhorse — strong summarization and analysis",
+        "context_window": 32768,
     },
     "gemma2:9b": {
         "name": "Gemma 2 9B",
@@ -108,6 +111,7 @@ RECOMMENDED_MODELS = {
         "quality": "Excellent",
         "speed": "Moderate",
         "description": "Google's best open model — excellent at following instructions",
+        "context_window": 8192,
     },
     "phi3:3.8b": {
         "name": "Phi-3 3.8B",
@@ -116,6 +120,7 @@ RECOMMENDED_MODELS = {
         "quality": "Good",
         "speed": "Very Fast",
         "description": "Lightweight champion — runs on 8GB RAM, punches above its weight",
+        "context_window": 4096,
     },
     "llama3.3:70b": {
         "name": "Llama 3.3 70B",
@@ -124,6 +129,7 @@ RECOMMENDED_MODELS = {
         "quality": "Best",
         "speed": "Slow",
         "description": "Maximum quality — needs 48GB+ RAM or 24GB+ VRAM GPU",
+        "context_window": 131072,
     },
     "qwen2.5:72b": {
         "name": "Qwen 2.5 72B",
@@ -132,6 +138,7 @@ RECOMMENDED_MODELS = {
         "quality": "Best",
         "speed": "Slow",
         "description": "Top reasoning at 72B scale — rivals GPT-4 on technical tasks",
+        "context_window": 131072,
     },
     "deepseek-r1:8b": {
         "name": "DeepSeek R1 8B",
@@ -140,6 +147,7 @@ RECOMMENDED_MODELS = {
         "quality": "Excellent",
         "speed": "Fast",
         "description": "Strong chain-of-thought reasoning — great for diagnostics",
+        "context_window": 65536,
     },
     "command-r:35b": {
         "name": "Command R 35B",
@@ -148,8 +156,177 @@ RECOMMENDED_MODELS = {
         "quality": "Excellent",
         "speed": "Moderate",
         "description": "Built for RAG — excels at citing sources and retrieval tasks",
+        "context_window": 131072,
     },
 }
+
+# Default context window for unknown models (conservative — most 7B+ models support 8k+)
+DEFAULT_CONTEXT_WINDOW = int(os.environ.get("DEFAULT_CONTEXT_WINDOW", "8192"))
+
+# Reserve this fraction of context window for model output (response generation)
+# e.g., 0.25 means 25% reserved for output, 75% available for prompt
+RESPONSE_TOKEN_RESERVE = float(os.environ.get("RESPONSE_TOKEN_RESERVE", "0.25"))
+
+
+# ---------------------------------------------------------------------------
+# Token budget estimation & enforcement
+# ---------------------------------------------------------------------------
+
+def estimate_tokens(text: str) -> int:
+    """
+    Estimate token count from text without a tokenizer.
+
+    Rule of thumb for English technical text:
+      ~4 characters per token (conservative for technical/marine vocabulary).
+      This is intentionally conservative — better to over-estimate and leave
+      headroom than to under-estimate and blow the context window.
+    """
+    return max(1, len(text) // 4)
+
+
+def get_model_context_window(model: str) -> int:
+    """
+    Get the context window size for a model.
+
+    Checks RECOMMENDED_MODELS first, then tries Ollama API for unknown models,
+    falls back to DEFAULT_CONTEXT_WINDOW.
+    """
+    # Check known models (match with or without version tag)
+    model_info = RECOMMENDED_MODELS.get(model)
+    if not model_info:
+        # Try matching base name (e.g., "qwen2.5" from "qwen2.5:7b-instruct")
+        base = model.split(":")[0]
+        for key, info in RECOMMENDED_MODELS.items():
+            if key.startswith(base):
+                model_info = info
+                break
+
+    if model_info and "context_window" in model_info:
+        return model_info["context_window"]
+
+    # Try Ollama API for unknown models
+    try:
+        import ollama
+        client = ollama.Client(host=OLLAMA_BASE_URL)
+        model_details = client.show(model)
+        # Ollama returns model info with context_length in parameters
+        if hasattr(model_details, 'model_info'):
+            for key, val in model_details.model_info.items():
+                if 'context_length' in key:
+                    return int(val)
+        if isinstance(model_details, dict) and 'model_info' in model_details:
+            for key, val in model_details['model_info'].items():
+                if 'context_length' in key:
+                    return int(val)
+    except Exception:
+        pass
+
+    logger.warning(
+        f"Unknown context window for model '{model}', "
+        f"using default {DEFAULT_CONTEXT_WINDOW} tokens"
+    )
+    return DEFAULT_CONTEXT_WINDOW
+
+
+def get_prompt_budget(model: str) -> int:
+    """
+    Calculate the maximum tokens available for the input prompt.
+
+    Returns context_window * (1 - RESPONSE_TOKEN_RESERVE).
+    """
+    ctx = get_model_context_window(model)
+    budget = int(ctx * (1 - RESPONSE_TOKEN_RESERVE))
+    return budget
+
+
+def trim_chunks_to_budget(
+    chunks: list[dict],
+    model: str,
+    system_prompt_tokens: int,
+    user_overhead_tokens: int,
+    conversation_tokens: int = 0,
+) -> tuple[list[dict], dict]:
+    """
+    Trim retrieved chunks to fit within the model's token budget.
+
+    Strategy:
+      1. Calculate available budget: prompt_budget - system - overhead - conversation
+      2. Add chunks one by one (best relevance first — already sorted by query)
+      3. Stop when adding the next chunk would exceed the budget
+      4. Return trimmed list + stats dict
+
+    Args:
+        chunks: Retrieved chunks (already sorted by relevance from vector store)
+        model: Model name for context window lookup
+        system_prompt_tokens: Estimated tokens in system prompt
+        user_overhead_tokens: Estimated tokens for question + formatting
+        conversation_tokens: Estimated tokens for conversation history
+
+    Returns:
+        (trimmed_chunks, stats) where stats = {
+            "total_chunks": N,
+            "kept_chunks": M,
+            "trimmed_chunks": N - M,
+            "prompt_budget": budget,
+            "estimated_usage": usage,
+            "context_window": window,
+        }
+    """
+    prompt_budget = get_prompt_budget(model)
+    context_window = get_model_context_window(model)
+
+    # Budget available for chunk content
+    fixed_overhead = system_prompt_tokens + user_overhead_tokens + conversation_tokens
+    chunk_budget = prompt_budget - fixed_overhead
+
+    if chunk_budget <= 0:
+        logger.warning(
+            f"Token budget exhausted by overhead alone: "
+            f"budget={prompt_budget}, overhead={fixed_overhead}. "
+            f"No room for chunks."
+        )
+        return [], {
+            "total_chunks": len(chunks),
+            "kept_chunks": 0,
+            "trimmed_chunks": len(chunks),
+            "prompt_budget": prompt_budget,
+            "estimated_usage": fixed_overhead,
+            "context_window": context_window,
+        }
+
+    kept = []
+    tokens_used = 0
+
+    for chunk in chunks:
+        # Estimate tokens for this chunk's formatted context block
+        # (text + header line + reference path)
+        chunk_text = chunk.get("text", "")
+        header_overhead = 100  # approximate for "--- Excerpt N [TYPE] (ref) [Relevance: X%] ---"
+        chunk_tokens = estimate_tokens(chunk_text) + estimate_tokens("") + (header_overhead // 4)
+
+        if tokens_used + chunk_tokens > chunk_budget:
+            # This chunk would overflow — stop here
+            break
+
+        kept.append(chunk)
+        tokens_used += chunk_tokens
+
+    trimmed_count = len(chunks) - len(kept)
+    if trimmed_count > 0:
+        logger.info(
+            f"Token budget trim: kept {len(kept)}/{len(chunks)} chunks "
+            f"({tokens_used}/{chunk_budget} tokens for chunks, "
+            f"model={model}, ctx={context_window})"
+        )
+
+    return kept, {
+        "total_chunks": len(chunks),
+        "kept_chunks": len(kept),
+        "trimmed_chunks": trimmed_count,
+        "prompt_budget": prompt_budget,
+        "estimated_usage": fixed_overhead + tokens_used,
+        "context_window": context_window,
+    }
 
 
 # ---------------------------------------------------------------------------

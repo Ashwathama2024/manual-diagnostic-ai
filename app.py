@@ -46,6 +46,9 @@ from llm_engine import (
     LLMTimeoutError,
     LLMStallError,
     LLMCancelledError,
+    SYSTEM_PROMPT,
+    estimate_tokens,
+    trim_chunks_to_budget,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -354,7 +357,25 @@ with tab_chat:
                     })
                     st.stop()
 
-                # Build sources with relevance scores
+                # --- Conversational RAG: build conversation history for LLM ---
+                conversation_context = conv_memory.get_context_for_llm(max_exchanges=3)
+
+                # --- Token Budget: trim chunks to fit model context window ---
+                selected_model = st.session_state["selected_model"]
+                system_tokens = estimate_tokens(SYSTEM_PROMPT)
+                # Overhead: question text + formatting + equipment context line
+                user_overhead = estimate_tokens(user_input) + 200
+                conv_tokens = estimate_tokens(conversation_context) if conversation_context else 0
+
+                results, budget_stats = trim_chunks_to_budget(
+                    chunks=results,
+                    model=selected_model,
+                    system_prompt_tokens=system_tokens,
+                    user_overhead_tokens=user_overhead,
+                    conversation_tokens=conv_tokens,
+                )
+
+                # Rebuild sources list from trimmed results
                 sources = [
                     {
                         "source_file": r["source_file"],
@@ -368,8 +389,14 @@ with tab_chat:
                     for r in results
                 ]
 
-                # --- Conversational RAG: build conversation history for LLM ---
-                conversation_context = conv_memory.get_context_for_llm(max_exchanges=3)
+                # Show budget warning if chunks were trimmed
+                if budget_stats["trimmed_chunks"] > 0:
+                    st.info(
+                        f"Token budget: kept **{budget_stats['kept_chunks']}/{budget_stats['total_chunks']}** "
+                        f"chunks to fit `{selected_model}` context window "
+                        f"({budget_stats['estimated_usage']:,}/{budget_stats['context_window']:,} tokens). "
+                        f"{budget_stats['trimmed_chunks']} lower-relevance chunk(s) trimmed."
+                    )
 
                 # Generate streaming response with timeout + fallback
                 with st.chat_message("assistant", avatar="🛠️"):
