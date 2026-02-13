@@ -27,7 +27,7 @@ import streamlit as st
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from doc_processor import process_pdf, get_processing_stats, DocumentChunk
-from vector_store import VectorStore
+from vector_store import VectorStore, EmbeddingModelMismatchError
 import threading
 
 from llm_engine import (
@@ -317,12 +317,27 @@ with tab_chat:
                     st.markdown(user_input)
 
                 # Retrieve context
-                with st.spinner("Searching manuals..."):
-                    results = vs.query(
-                        active_eq,
-                        user_input,
-                        n_results=st.session_state["n_results"],
+                try:
+                    with st.spinner("Searching manuals..."):
+                        results = vs.query(
+                            active_eq,
+                            user_input,
+                            n_results=st.session_state["n_results"],
+                        )
+                except EmbeddingModelMismatchError as e:
+                    st.error(
+                        f"**Embedding Model Mismatch**\n\n"
+                        f"This equipment was embedded with **{e.stored_model}** ({e.stored_dim}d), "
+                        f"but the current model is **{e.current_model}** ({e.current_dim}d).\n\n"
+                        f"Querying with a different model produces **corrupt results**.\n\n"
+                        f"**Fix:** Go to **Equipment Manager** and click **Re-embed** on this equipment, "
+                        f"or revert `EMBEDDING_MODEL` in `.env` to `{e.stored_model}`."
                     )
+                    st.session_state["chat_history"].append({
+                        "role": "assistant",
+                        "content": f"*Blocked: embedding model mismatch ({e.stored_model} ≠ {e.current_model})*",
+                    })
+                    st.stop()
 
                 # Build sources
                 sources = [
@@ -491,11 +506,44 @@ with tab_equipment:
     else:
         for equip in equipment_list:
             with st.container():
+                # Get embedding compatibility info
+                embed_info = vs.get_embedding_info(equip.equipment_id)
+                embed_model_str = embed_info.get("model", "unknown")
+                embed_dim_str = embed_info.get("dimension", "?")
+                is_compatible = embed_info.get("compatible", True)
+
                 st.markdown(f"""<div class="equipment-card">
                     <h4>{equip.name}</h4>
                     <p><strong>ID:</strong> {equip.equipment_id} | <strong>Manuals:</strong> {equip.manual_count} | <strong>Chunks:</strong> {equip.chunk_count}</p>
+                    <p><strong>Embedding:</strong> {embed_model_str} ({embed_dim_str}d) {'✅' if is_compatible else '⚠️ MISMATCH'}</p>
                     <p>{equip.description}</p>
                 </div>""", unsafe_allow_html=True)
+
+                # Show mismatch warning with re-embed button
+                if not is_compatible:
+                    st.warning(
+                        f"**Embedding model changed!** This equipment was embedded with "
+                        f"`{embed_model_str}` but current model is `{embed_info.get('current_model', '?')}`. "
+                        f"Queries will be **blocked** until re-embedded."
+                    )
+                    if st.button(
+                        f"Re-embed with {embed_info.get('current_model', 'current model')}",
+                        key=f"reembed_{equip.equipment_id}",
+                        type="primary",
+                    ):
+                        progress_bar = st.progress(0.0)
+                        status = st.empty()
+                        status.info(f"Re-embedding {equip.chunk_count} chunks... This may take a few minutes.")
+                        try:
+                            count = vs.re_embed_equipment(
+                                equip.equipment_id,
+                                progress_callback=lambda pct: progress_bar.progress(min(pct, 1.0)),
+                            )
+                            progress_bar.progress(1.0)
+                            status.success(f"Re-embedded {count} chunks with `{embed_info.get('current_model')}`")
+                            st.rerun()
+                        except Exception as e:
+                            status.error(f"Re-embedding failed: {e}")
 
                 if equip.manuals:
                     with st.expander("Uploaded Manuals"):
@@ -537,6 +585,17 @@ with tab_upload:
                 (e.name for e in equipment_list if e.equipment_id == x), x
             ),
         )
+
+        # Check embedding model compatibility before allowing uploads
+        upload_embed_info = vs.get_embedding_info(target_eq)
+        if upload_embed_info and not upload_embed_info.get("compatible", True):
+            st.error(
+                f"**Cannot upload:** embedding model mismatch. "
+                f"This equipment uses `{upload_embed_info['model']}` but current is "
+                f"`{upload_embed_info['current_model']}`. "
+                f"Go to **Equipment Manager** → **Re-embed** first."
+            )
+            st.stop()
 
         st.markdown("""
         **What gets extracted automatically:**

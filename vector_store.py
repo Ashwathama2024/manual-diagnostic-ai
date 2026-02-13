@@ -9,12 +9,15 @@ Every chunk stores rich metadata:
   - section_title, section_hierarchy, chapter
   - equipment_id
 
-This allows the LLM to cite: "MAN B&W Manual > Chapter 3: Fuel System >
-3.2.1 Injection Timing > Page 45" instead of just "Page 45".
+Embedding Model Safety:
+  - Each equipment records which embedding model + dimension was used at creation.
+  - On every query, the current model is checked against the stored model.
+  - If the model has changed, queries are BLOCKED with a clear warning.
+  - Re-embedding is supported via re_embed_equipment() to migrate safely.
 
 Architecture:
-  Equipment A → Collection "equip_boiler_main"
-  Equipment B → Collection "equip_generator_01"
+  Equipment A → Collection "equip_boiler_main"  (bge-small-en-v1.5, 384d)
+  Equipment B → Collection "equip_generator_01"  (bge-small-en-v1.5, 384d)
   ...each fully independent, queryable separately.
 """
 
@@ -38,6 +41,32 @@ DEFAULT_PERSIST_DIR = os.environ.get("CHROMA_PERSIST_DIR", "./chroma_db")
 # Embedding model — BGE-small gives better retrieval accuracy than MiniLM
 # while still being fast on CPU (~33M params, 384-dim)
 DEFAULT_EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
+
+
+# ---------------------------------------------------------------------------
+# Custom Exceptions
+# ---------------------------------------------------------------------------
+
+class EmbeddingModelMismatchError(Exception):
+    """
+    Raised when the current embedding model does not match the model
+    used to create an equipment's vector store.
+
+    Querying with a different model produces semantically corrupt results.
+    """
+    def __init__(self, equipment_id: str, stored_model: str, stored_dim: int,
+                 current_model: str, current_dim: int):
+        self.equipment_id = equipment_id
+        self.stored_model = stored_model
+        self.stored_dim = stored_dim
+        self.current_model = current_model
+        self.current_dim = current_dim
+        super().__init__(
+            f"Embedding model mismatch for equipment '{equipment_id}': "
+            f"stored={stored_model} ({stored_dim}d), "
+            f"current={current_model} ({current_dim}d). "
+            f"Re-embed this equipment or revert to the original model."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -162,14 +191,24 @@ class VectorStore:
             "manual_count": 0,
             "chunk_count": 0,
             "manuals": [],
+            "embedding_model": self.embedding_fn.model_name,
+            "embedding_dimension": self.embedding_fn.dimension,
         }
         self._save_registry()
         self.client.get_or_create_collection(
             name=col_name,
             embedding_function=self.embedding_fn,
-            metadata={"equipment_id": equipment_id, "name": name},
+            metadata={
+                "equipment_id": equipment_id,
+                "name": name,
+                "embedding_model": self.embedding_fn.model_name,
+                "embedding_dimension": self.embedding_fn.dimension,
+            },
         )
-        logger.info(f"Registered equipment '{name}' -> collection '{col_name}'")
+        logger.info(
+            f"Registered equipment '{name}' -> collection '{col_name}' "
+            f"[embedding: {self.embedding_fn.model_name}, {self.embedding_fn.dimension}d]"
+        )
         return col_name
 
     def list_equipment(self) -> list[EquipmentInfo]:
@@ -225,6 +264,146 @@ class VectorStore:
         logger.info(f"Deleted equipment '{equipment_id}'")
         return True
 
+    # --- Embedding model safety ---
+
+    def _check_embedding_compatibility(self, equipment_id: str) -> None:
+        """
+        Verify the current embedding model matches what was used to embed
+        this equipment's data. Raises EmbeddingModelMismatchError if not.
+
+        This prevents silent semantic corruption when someone changes
+        EMBEDDING_MODEL in .env without re-embedding existing data.
+        """
+        meta = self._registry.get(equipment_id)
+        if not meta:
+            return
+
+        stored_model = meta.get("embedding_model", "")
+        stored_dim = meta.get("embedding_dimension", 0)
+
+        # Legacy equipment registered before model tracking — backfill it
+        if not stored_model:
+            logger.warning(
+                f"Equipment '{equipment_id}' has no embedding model recorded. "
+                f"Assuming current model '{self.embedding_fn.model_name}' and backfilling."
+            )
+            meta["embedding_model"] = self.embedding_fn.model_name
+            meta["embedding_dimension"] = self.embedding_fn.dimension
+            self._save_registry()
+            return
+
+        current_model = self.embedding_fn.model_name
+        current_dim = self.embedding_fn.dimension
+
+        if stored_model != current_model:
+            raise EmbeddingModelMismatchError(
+                equipment_id=equipment_id,
+                stored_model=stored_model,
+                stored_dim=stored_dim,
+                current_model=current_model,
+                current_dim=current_dim,
+            )
+
+        if stored_dim != current_dim:
+            raise EmbeddingModelMismatchError(
+                equipment_id=equipment_id,
+                stored_model=stored_model,
+                stored_dim=stored_dim,
+                current_model=current_model,
+                current_dim=current_dim,
+            )
+
+    def get_embedding_info(self, equipment_id: str) -> dict:
+        """Get embedding model info for an equipment. Useful for UI display."""
+        meta = self._registry.get(equipment_id)
+        if not meta:
+            return {}
+        return {
+            "model": meta.get("embedding_model", "unknown"),
+            "dimension": meta.get("embedding_dimension", 0),
+            "current_model": self.embedding_fn.model_name,
+            "current_dimension": self.embedding_fn.dimension,
+            "compatible": meta.get("embedding_model", "") == self.embedding_fn.model_name,
+        }
+
+    def re_embed_equipment(self, equipment_id: str, progress_callback=None) -> int:
+        """
+        Re-embed all chunks for an equipment using the CURRENT embedding model.
+
+        Use this when you've changed the embedding model and need to migrate
+        existing data. The old collection is deleted and rebuilt from stored
+        document texts.
+
+        Returns: number of chunks re-embedded
+        """
+        meta = self._registry.get(equipment_id)
+        if not meta:
+            raise ValueError(f"Equipment '{equipment_id}' not registered.")
+
+        col_name = meta["collection_name"]
+
+        # Step 1: Read all existing data from the old collection
+        try:
+            old_collection = self.client.get_collection(name=col_name)
+            existing = old_collection.get(include=["documents", "metadatas"])
+        except Exception as e:
+            raise ValueError(f"Cannot read collection for '{equipment_id}': {e}")
+
+        if not existing or not existing["ids"]:
+            logger.warning(f"Equipment '{equipment_id}' has no chunks to re-embed.")
+            return 0
+
+        total = len(existing["ids"])
+        logger.info(
+            f"Re-embedding {total} chunks for '{equipment_id}': "
+            f"{meta.get('embedding_model', '?')} -> {self.embedding_fn.model_name}"
+        )
+
+        # Step 2: Delete old collection
+        self.client.delete_collection(col_name)
+
+        # Step 3: Create new collection with current embedding model
+        new_collection = self.client.get_or_create_collection(
+            name=col_name,
+            embedding_function=self.embedding_fn,
+            metadata={
+                "equipment_id": equipment_id,
+                "name": meta["name"],
+                "embedding_model": self.embedding_fn.model_name,
+                "embedding_dimension": self.embedding_fn.dimension,
+            },
+        )
+
+        # Step 4: Re-insert in batches (embeddings auto-generated by new model)
+        batch_size = 100
+        re_embedded = 0
+        for i in range(0, total, batch_size):
+            batch_ids = existing["ids"][i:i + batch_size]
+            batch_docs = existing["documents"][i:i + batch_size]
+            batch_meta = existing["metadatas"][i:i + batch_size] if existing["metadatas"] else [{}] * len(batch_ids)
+
+            new_collection.upsert(
+                ids=batch_ids,
+                documents=batch_docs,
+                metadatas=batch_meta,
+            )
+            re_embedded += len(batch_ids)
+
+            if progress_callback:
+                progress_callback(re_embedded / total)
+
+        # Step 5: Update registry with new model info
+        meta["embedding_model"] = self.embedding_fn.model_name
+        meta["embedding_dimension"] = self.embedding_fn.dimension
+        meta["chunk_count"] = new_collection.count()
+        self._save_registry()
+
+        logger.info(
+            f"Re-embedded {re_embedded} chunks for '{equipment_id}' "
+            f"with {self.embedding_fn.model_name} ({self.embedding_fn.dimension}d)"
+        )
+        return re_embedded
+
     # --- Document ingestion ---
 
     def add_chunks(self, equipment_id: str, chunks: list, source_filename: str = "") -> int:
@@ -232,11 +411,15 @@ class VectorStore:
         Add document chunks to an equipment's collection.
         Stores rich metadata including section hierarchy for precise citations.
 
+        Raises EmbeddingModelMismatchError if the current model doesn't match.
         Returns: Number of chunks added
         """
         meta = self._registry.get(equipment_id)
         if not meta:
             raise ValueError(f"Equipment '{equipment_id}' not registered. Register it first.")
+
+        # Guard: don't mix embeddings from different models
+        self._check_embedding_compatibility(equipment_id)
 
         col_name = meta["collection_name"]
         collection = self.client.get_or_create_collection(
@@ -305,6 +488,7 @@ class VectorStore:
         Query an equipment's knowledge base.
         Returns chunks with full section metadata for precise citations.
 
+        Raises EmbeddingModelMismatchError if the current model doesn't match.
         Returns:
             List of {text, source_file, page_number, chunk_type,
                      section_title, section_hierarchy, chapter, distance}
@@ -312,6 +496,9 @@ class VectorStore:
         meta = self._registry.get(equipment_id)
         if not meta:
             raise ValueError(f"Equipment '{equipment_id}' not registered.")
+
+        # Guard: block queries if embedding model has changed
+        self._check_embedding_compatibility(equipment_id)
 
         col_name = meta["collection_name"]
         collection = self.client.get_collection(
