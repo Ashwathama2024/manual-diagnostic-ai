@@ -149,6 +149,10 @@ def init_session_state():
         "n_results": 8,
         "min_relevance": 40,
         "use_vision": True,
+        # --- Concurrency locks ---
+        "is_processing": False,       # True while PDF processing pipeline is running
+        "is_generating": False,       # True while LLM inference is streaming
+        "cancel_event": None,         # threading.Event to cancel in-flight inference
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -321,6 +325,19 @@ with tab_chat:
             )
 
             if user_input:
+                # --- Inference lock: cancel any in-flight inference ---
+                if st.session_state.get("cancel_event"):
+                    st.session_state["cancel_event"].set()
+                    logger.info("Cancelled previous inference — new query submitted")
+
+                # Guard: block if processing pipeline is running
+                if st.session_state.get("is_processing"):
+                    st.warning(
+                        "PDF processing is in progress. Please wait for it "
+                        "to finish before asking questions."
+                    )
+                    st.stop()
+
                 # Show user message immediately
                 st.session_state["chat_history"].append({
                     "role": "user",
@@ -398,6 +415,11 @@ with tab_chat:
                         f"{budget_stats['trimmed_chunks']} lower-relevance chunk(s) trimmed."
                     )
 
+                # --- Inference lock: set active ---
+                cancel_event = threading.Event()
+                st.session_state["cancel_event"] = cancel_event
+                st.session_state["is_generating"] = True
+
                 # Generate streaming response with timeout + fallback
                 with st.chat_message("assistant", avatar="🛠️"):
                     try:
@@ -410,6 +432,7 @@ with tab_chat:
                                 equipment_name=equip_info.name if equip_info else "",
                                 fallback_model=FALLBACK_MODEL,
                                 conversation_context=conversation_context,
+                                cancel_event=cancel_event,
                             )
                         else:
                             response_stream = generate_response(
@@ -418,6 +441,7 @@ with tab_chat:
                                 model=st.session_state["selected_model"],
                                 equipment_name=equip_info.name if equip_info else "",
                                 conversation_context=conversation_context,
+                                cancel_event=cancel_event,
                             )
 
                         response_text = st.write_stream(response_stream)
@@ -497,6 +521,11 @@ with tab_chat:
                             "role": "assistant",
                             "content": f"*Error: {error_msg}*",
                         })
+
+                    finally:
+                        # --- Inference lock: release ---
+                        st.session_state["is_generating"] = False
+                        st.session_state["cancel_event"] = None
 
             # Clear chat button
             if st.session_state["chat_history"]:
@@ -670,9 +699,24 @@ with tab_upload:
                 size_mb = f.size / 1024 / 1024
                 st.markdown(f"- {f.name} ({size_mb:.1f} MB)")
 
+            # --- Processing lock: disable button if already running ---
+            processing_active = st.session_state.get("is_processing", False)
+
+            if processing_active:
+                st.warning("Processing is already in progress. Please wait for it to complete.")
+
             # AUTO-PROCESS on button click (one click does everything)
             if st.button("Process & Store", type="primary",
+                         disabled=processing_active,
                          help="Extracts text, tables, diagrams → embeds → stores in vector DB"):
+
+                # Double-check guard (handles race between reruns)
+                if st.session_state.get("is_processing"):
+                    st.warning("Processing already in progress — ignoring duplicate click.")
+                    st.stop()
+
+                # --- Processing lock: acquire ---
+                st.session_state["is_processing"] = True
 
                 total_chunks = 0
                 total_sections = 0
@@ -680,72 +724,77 @@ with tab_upload:
                 status = st.empty()
                 detail_container = st.container()
 
-                for file_idx, uploaded_file in enumerate(uploaded_files):
-                    status.markdown(f'<div class="pipeline-stage">Processing: <strong>{uploaded_file.name}</strong> ({file_idx+1}/{len(uploaded_files)})</div>', unsafe_allow_html=True)
+                try:
+                    for file_idx, uploaded_file in enumerate(uploaded_files):
+                        status.markdown(f'<div class="pipeline-stage">Processing: <strong>{uploaded_file.name}</strong> ({file_idx+1}/{len(uploaded_files)})</div>', unsafe_allow_html=True)
 
-                    # Save to temp
-                    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-                        tmp.write(uploaded_file.read())
-                        tmp_path = tmp.name
+                        # Save to temp
+                        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                            tmp.write(uploaded_file.read())
+                            tmp_path = tmp.name
 
-                    try:
-                        # --- AUTOMATIC PIPELINE ---
-                        # Step 1: Extract + semantic chunk
-                        def update_progress(stage, pct):
-                            overall = (file_idx + pct) / len(uploaded_files)
-                            progress_bar.progress(min(overall, 1.0))
-                            status.markdown(f'<div class="pipeline-stage"><strong>{uploaded_file.name}:</strong> {stage}</div>', unsafe_allow_html=True)
+                        try:
+                            # --- AUTOMATIC PIPELINE ---
+                            # Step 1: Extract + semantic chunk
+                            def update_progress(stage, pct):
+                                overall = (file_idx + pct) / len(uploaded_files)
+                                progress_bar.progress(min(overall, 1.0))
+                                status.markdown(f'<div class="pipeline-stage"><strong>{uploaded_file.name}:</strong> {stage}</div>', unsafe_allow_html=True)
 
-                        chunks = process_pdf(
-                            tmp_path,
-                            target_eq,
-                            chunk_size=st.session_state["chunk_size"],
-                            chunk_overlap=st.session_state["chunk_overlap"],
-                            progress_callback=update_progress,
-                            use_vision=st.session_state["use_vision"],
-                            source_filename=uploaded_file.name,
-                        )
-
-                        # Step 2: Embed + store (automatic)
-                        status.markdown(f'<div class="pipeline-stage"><strong>{uploaded_file.name}:</strong> Embedding & storing in vector database...</div>', unsafe_allow_html=True)
-                        added = vs.add_chunks(target_eq, chunks, uploaded_file.name)
-                        total_chunks += added
-
-                        # Show detailed stats
-                        stats = get_processing_stats(chunks)
-                        total_sections += stats.get("sections_detected", 0)
-
-                        with detail_container:
-                            st.markdown(
-                                f"**{uploaded_file.name}** — "
-                                f"{stats['total_chunks']} chunks | "
-                                f"{stats.get('pages_covered', 0)} pages | "
-                                f"{stats.get('sections_detected', 0)} sections | "
-                                f"Types: {stats.get('chunks_by_type', {})}"
+                            chunks = process_pdf(
+                                tmp_path,
+                                target_eq,
+                                chunk_size=st.session_state["chunk_size"],
+                                chunk_overlap=st.session_state["chunk_overlap"],
+                                progress_callback=update_progress,
+                                use_vision=st.session_state["use_vision"],
+                                source_filename=uploaded_file.name,
                             )
-                            if stats.get("sections"):
-                                with st.expander(f"Detected sections ({len(stats['sections'])})"):
-                                    for s in stats["sections"]:
-                                        st.markdown(f"- {s}")
 
-                    except Exception as e:
-                        st.error(f"Error processing {uploaded_file.name}: {e}")
-                        logger.error(f"Processing error: {e}", exc_info=True)
-                    finally:
-                        os.unlink(tmp_path)
+                            # Step 2: Embed + store (automatic)
+                            status.markdown(f'<div class="pipeline-stage"><strong>{uploaded_file.name}:</strong> Embedding & storing in vector database...</div>', unsafe_allow_html=True)
+                            added = vs.add_chunks(target_eq, chunks, uploaded_file.name)
+                            total_chunks += added
 
-                progress_bar.progress(1.0)
+                            # Show detailed stats
+                            stats = get_processing_stats(chunks)
+                            total_sections += stats.get("sections_detected", 0)
 
-                equip_name = next((e.name for e in equipment_list if e.equipment_id == target_eq), target_eq)
-                status.empty()
-                st.success(
-                    f"Done! {len(uploaded_files)} manual(s) processed:\n"
-                    f"- **{total_chunks}** knowledge chunks stored\n"
-                    f"- **{total_sections}** sections detected\n"
-                    f"- Equipment: **{equip_name}**\n\n"
-                    f"Go to **Diagnostic Chat** to start asking questions!"
-                )
-                st.balloons()
+                            with detail_container:
+                                st.markdown(
+                                    f"**{uploaded_file.name}** — "
+                                    f"{stats['total_chunks']} chunks | "
+                                    f"{stats.get('pages_covered', 0)} pages | "
+                                    f"{stats.get('sections_detected', 0)} sections | "
+                                    f"Types: {stats.get('chunks_by_type', {})}"
+                                )
+                                if stats.get("sections"):
+                                    with st.expander(f"Detected sections ({len(stats['sections'])})"):
+                                        for s in stats["sections"]:
+                                            st.markdown(f"- {s}")
+
+                        except Exception as e:
+                            st.error(f"Error processing {uploaded_file.name}: {e}")
+                            logger.error(f"Processing error: {e}", exc_info=True)
+                        finally:
+                            os.unlink(tmp_path)
+
+                    progress_bar.progress(1.0)
+
+                    equip_name = next((e.name for e in equipment_list if e.equipment_id == target_eq), target_eq)
+                    status.empty()
+                    st.success(
+                        f"Done! {len(uploaded_files)} manual(s) processed:\n"
+                        f"- **{total_chunks}** knowledge chunks stored\n"
+                        f"- **{total_sections}** sections detected\n"
+                        f"- Equipment: **{equip_name}**\n\n"
+                        f"Go to **Diagnostic Chat** to start asking questions!"
+                    )
+                    st.balloons()
+
+                finally:
+                    # --- Processing lock: release ---
+                    st.session_state["is_processing"] = False
 
         # --- Existing data ---
         st.markdown("---")
