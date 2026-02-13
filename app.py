@@ -28,15 +28,24 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from doc_processor import process_pdf, get_processing_stats, DocumentChunk
 from vector_store import VectorStore
+import threading
+
 from llm_engine import (
     check_ollama_status,
     get_available_models,
     generate_response,
     generate_response_full,
+    generate_response_with_fallback,
     ConversationMemory,
     RECOMMENDED_MODELS,
     DEFAULT_MODEL,
     OLLAMA_BASE_URL,
+    FALLBACK_MODEL,
+    LLM_FIRST_TOKEN_TIMEOUT,
+    LLM_INTER_TOKEN_TIMEOUT,
+    LLMTimeoutError,
+    LLMStallError,
+    LLMCancelledError,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -328,17 +337,27 @@ with tab_chat:
                     for r in results
                 ]
 
-                # Generate streaming response
+                # Generate streaming response with timeout + fallback
                 with st.chat_message("assistant", avatar="🛠️"):
                     try:
-                        response_text = st.write_stream(
-                            generate_response(
+                        # Use fallback-aware generator if a fallback model is configured
+                        if FALLBACK_MODEL and FALLBACK_MODEL != st.session_state["selected_model"]:
+                            response_stream = generate_response_with_fallback(
+                                question=user_input,
+                                retrieved_chunks=results,
+                                model=st.session_state["selected_model"],
+                                equipment_name=equip_info.name if equip_info else "",
+                                fallback_model=FALLBACK_MODEL,
+                            )
+                        else:
+                            response_stream = generate_response(
                                 question=user_input,
                                 retrieved_chunks=results,
                                 model=st.session_state["selected_model"],
                                 equipment_name=equip_info.name if equip_info else "",
                             )
-                        )
+
+                        response_text = st.write_stream(response_stream)
 
                         # Show sources
                         if sources:
@@ -361,6 +380,43 @@ with tab_chat:
                         st.session_state["conversation_memory"].add_exchange(
                             user_input, response_text, sources
                         )
+
+                    except LLMTimeoutError as e:
+                        timeout_msgs = {
+                            "first_token": (
+                                f"Model **{st.session_state['selected_model']}** did not respond "
+                                f"within {LLM_FIRST_TOKEN_TIMEOUT}s.\n\n"
+                                f"**Possible causes:**\n"
+                                f"- Model is loading into memory (first query is slow)\n"
+                                f"- System is overloaded — close other heavy apps\n"
+                                f"- Model too large for available RAM\n\n"
+                                f"**Try:** Ask again (model may be loaded now), or switch to a smaller model."
+                            ),
+                            "inter_token": (
+                                f"Model **{st.session_state['selected_model']}** stalled mid-response "
+                                f"after {e.elapsed:.0f}s.\n\n"
+                                f"This can happen when the system runs out of memory during generation.\n\n"
+                                f"**Try:** Ask a shorter question, reduce Context Chunks, or use a smaller model."
+                            ),
+                            "total": (
+                                f"Response exceeded the maximum time limit ({e.elapsed:.0f}s).\n\n"
+                                f"**Try:** Ask a more focused question or reduce Context Chunks in Advanced Settings."
+                            ),
+                        }
+                        error_display = timeout_msgs.get(e.timeout_type, str(e))
+                        st.warning(f"Timeout: {error_display}")
+
+                        st.session_state["chat_history"].append({
+                            "role": "assistant",
+                            "content": f"*Timeout ({e.timeout_type}): {e}*",
+                        })
+
+                    except LLMCancelledError:
+                        st.info("Response generation was cancelled.")
+                        st.session_state["chat_history"].append({
+                            "role": "assistant",
+                            "content": "*Response cancelled by user.*",
+                        })
 
                     except Exception as e:
                         error_msg = str(e)
