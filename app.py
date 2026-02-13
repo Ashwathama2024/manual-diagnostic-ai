@@ -144,6 +144,7 @@ def init_session_state():
         "chunk_size": 1000,
         "chunk_overlap": 200,
         "n_results": 8,
+        "min_relevance": 40,
         "use_vision": True,
     }
     for key, val in defaults.items():
@@ -239,6 +240,12 @@ def render_sidebar():
             st.session_state["n_results"] = st.slider(
                 "Context Chunks", 1, 15, st.session_state["n_results"]
             )
+            st.session_state["min_relevance"] = st.slider(
+                "Min Relevance %", 0, 80, st.session_state["min_relevance"], 5,
+                help="Discard retrieved chunks below this relevance score. "
+                     "Higher = fewer but better quality chunks sent to LLM. "
+                     "40% recommended. Set to 0 to disable filtering."
+            )
             st.session_state["use_vision"] = st.checkbox(
                 "Use Vision Model for Diagrams",
                 value=st.session_state["use_vision"],
@@ -300,6 +307,9 @@ with tab_chat:
                                     ref += f" > {hierarchy}"
                                 ref += f" > Page {src['page_number']}"
                                 ref += f" *[{src['chunk_type']}]*"
+                                rel = src.get("relevance_score", 0)
+                                if rel > 0:
+                                    ref += f" — **{rel:.0f}%**"
                                 st.markdown(f"- {ref}")
 
             # --- Chat input ---
@@ -323,6 +333,7 @@ with tab_chat:
                             active_eq,
                             user_input,
                             n_results=st.session_state["n_results"],
+                            min_relevance=st.session_state["min_relevance"],
                         )
                 except EmbeddingModelMismatchError as e:
                     st.error(
@@ -339,7 +350,7 @@ with tab_chat:
                     })
                     st.stop()
 
-                # Build sources
+                # Build sources with relevance scores
                 sources = [
                     {
                         "source_file": r["source_file"],
@@ -348,6 +359,7 @@ with tab_chat:
                         "section_title": r.get("section_title", ""),
                         "section_hierarchy": r.get("section_hierarchy", ""),
                         "chapter": r.get("chapter", ""),
+                        "relevance_score": r.get("relevance_score", 0),
                     }
                     for r in results
                 ]
@@ -374,7 +386,7 @@ with tab_chat:
 
                         response_text = st.write_stream(response_stream)
 
-                        # Show sources
+                        # Show sources with relevance scores
                         if sources:
                             with st.expander(f"Sources ({len(sources)} references)", expanded=False):
                                 for src in sources:
@@ -384,6 +396,9 @@ with tab_chat:
                                         ref += f" > {hierarchy}"
                                     ref += f" > Page {src['page_number']}"
                                     ref += f" *[{src['chunk_type']}]*"
+                                    rel = src.get("relevance_score", 0)
+                                    if rel > 0:
+                                        ref += f" — **{rel:.0f}%**"
                                     st.markdown(f"- {ref}")
 
                         st.session_state["chat_history"].append({

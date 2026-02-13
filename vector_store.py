@@ -42,6 +42,20 @@ DEFAULT_PERSIST_DIR = os.environ.get("CHROMA_PERSIST_DIR", "./chroma_db")
 # while still being fast on CPU (~33M params, 384-dim)
 DEFAULT_EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
 
+# ---------------------------------------------------------------------------
+# Retrieval Quality Configuration
+# ---------------------------------------------------------------------------
+# Minimum relevance score (0-100) to include a chunk in results.
+# ChromaDB returns L2 distance; with normalized embeddings:
+#   relevance = (1 - distance/2) * 100  →  100% = identical, 0% = unrelated
+#
+# Recommended thresholds:
+#   40+ = reasonably relevant (default — catches most useful chunks)
+#   50+ = clearly relevant (stricter — fewer but higher quality)
+#   30+ = loose (more recall, risk of noise)
+#   0   = disabled (return everything ChromaDB returns)
+DEFAULT_MIN_RELEVANCE = float(os.environ.get("MIN_RELEVANCE_SCORE", "40"))
+
 
 # ---------------------------------------------------------------------------
 # Custom Exceptions
@@ -477,21 +491,44 @@ class VectorStore:
 
     # --- Querying ---
 
+    @staticmethod
+    def _l2_to_relevance(distance: float) -> float:
+        """
+        Convert ChromaDB L2 distance to a 0-100 relevance score.
+
+        With normalized embeddings (normalize_embeddings=True in encode()),
+        L2 distance ranges from 0 (identical) to 2 (opposite).
+        Relation: cosine_similarity = 1 - (L2_distance / 2)
+
+        Returns: relevance score 0-100 (100 = identical, 0 = unrelated)
+        """
+        return max(0.0, min(100.0, (1.0 - distance / 2.0) * 100.0))
+
     def query(
         self,
         equipment_id: str,
         query_text: str,
         n_results: int = 8,
         chunk_types: Optional[list[str]] = None,
+        min_relevance: float = None,
     ) -> list[dict]:
         """
-        Query an equipment's knowledge base.
-        Returns chunks with full section metadata for precise citations.
+        Query an equipment's knowledge base with relevance filtering.
+
+        Args:
+            equipment_id: Which equipment to search
+            query_text: The user's question
+            n_results: Max chunks to retrieve from ChromaDB (before filtering)
+            chunk_types: Optional filter for chunk types
+            min_relevance: Minimum relevance score (0-100) to keep a chunk.
+                          Chunks below this threshold are discarded as noise.
+                          Default: DEFAULT_MIN_RELEVANCE from env.
 
         Raises EmbeddingModelMismatchError if the current model doesn't match.
         Returns:
             List of {text, source_file, page_number, chunk_type,
-                     section_title, section_hierarchy, chapter, distance}
+                     section_title, section_hierarchy, chapter, distance,
+                     relevance_score, filtered_out_count}
         """
         meta = self._registry.get(equipment_id)
         if not meta:
@@ -499,6 +536,9 @@ class VectorStore:
 
         # Guard: block queries if embedding model has changed
         self._check_embedding_compatibility(equipment_id)
+
+        if min_relevance is None:
+            min_relevance = DEFAULT_MIN_RELEVANCE
 
         col_name = meta["collection_name"]
         collection = self.client.get_collection(
@@ -516,17 +556,30 @@ class VectorStore:
             else:
                 where_filter = {"chunk_type": {"$in": chunk_types}}
 
+        # Fetch more than needed so we have room after filtering
+        fetch_count = min(n_results * 2, collection.count()) if min_relevance > 0 else n_results
+        fetch_count = min(fetch_count, collection.count())
+
         results = collection.query(
             query_texts=[query_text],
-            n_results=min(n_results, collection.count()),
+            n_results=fetch_count,
             where=where_filter,
         )
 
         formatted = []
+        filtered_count = 0
+
         if results and results["documents"]:
             for i, doc in enumerate(results["documents"][0]):
                 meta_item = results["metadatas"][0][i] if results["metadatas"] else {}
                 distance = results["distances"][0][i] if results["distances"] else 0
+                relevance = self._l2_to_relevance(distance)
+
+                # Filter out low-quality chunks
+                if min_relevance > 0 and relevance < min_relevance:
+                    filtered_count += 1
+                    continue
+
                 formatted.append({
                     "text": doc,
                     "source_file": meta_item.get("source_file", ""),
@@ -537,7 +590,18 @@ class VectorStore:
                     "chapter": meta_item.get("chapter", ""),
                     "image_path": meta_item.get("image_path", ""),
                     "distance": round(distance, 4),
+                    "relevance_score": round(relevance, 1),
                 })
+
+                # Stop once we have enough high-quality results
+                if len(formatted) >= n_results:
+                    break
+
+        if filtered_count > 0:
+            logger.info(
+                f"Retrieval filter: kept {len(formatted)}, "
+                f"discarded {filtered_count} below {min_relevance}% relevance"
+            )
 
         return formatted
 

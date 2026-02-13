@@ -221,6 +221,7 @@ def build_context(retrieved_chunks: list[dict]) -> str:
     """
     Format retrieved chunks into a structured context block for the LLM.
     Includes full section hierarchy for precise citations.
+    Adds relevance quality tier so LLM can weigh evidence appropriately.
     """
     if not retrieved_chunks:
         return "No relevant manual data found for this query."
@@ -228,14 +229,29 @@ def build_context(retrieved_chunks: list[dict]) -> str:
     context_parts = []
     context_parts.append("=" * 60)
     context_parts.append("RETRIEVED MANUAL DATA (use ONLY this data to answer)")
+    context_parts.append(f"({len(retrieved_chunks)} excerpts passed quality filter)")
     context_parts.append("=" * 60)
 
     for i, chunk in enumerate(retrieved_chunks, 1):
         source = chunk.get("source_file", "Unknown")
         page = chunk.get("page_number", "?")
         ctype = chunk.get("chunk_type", "text")
-        distance = chunk.get("distance", 0)
-        relevance = max(0, round((1 - distance) * 100, 1))
+
+        # Use pre-computed relevance score if available (accurate L2→cosine),
+        # otherwise fall back to simple distance conversion
+        if "relevance_score" in chunk:
+            relevance = chunk["relevance_score"]
+        else:
+            distance = chunk.get("distance", 0)
+            relevance = max(0, round((1 - distance / 2.0) * 100, 1))
+
+        # Quality tier for LLM awareness
+        if relevance >= 70:
+            tier = "HIGH"
+        elif relevance >= 50:
+            tier = "MEDIUM"
+        else:
+            tier = "LOW"
 
         # Build the reference path
         section = chunk.get("section_hierarchy", "") or chunk.get("section_title", "")
@@ -251,13 +267,14 @@ def build_context(retrieved_chunks: list[dict]) -> str:
 
         context_parts.append(
             f"\n--- Excerpt {i} [{ctype.upper()}] ({reference}) "
-            f"[Relevance: {relevance}%] ---"
+            f"[Relevance: {relevance}% — {tier}] ---"
         )
         context_parts.append(chunk.get("text", ""))
 
     context_parts.append("\n" + "=" * 60)
     context_parts.append("CITATION INSTRUCTION: When referencing this data, cite as:")
     context_parts.append("**[Source: filename > section hierarchy > Page X]**")
+    context_parts.append("Prioritize HIGH relevance excerpts. Use LOW relevance excerpts only if they directly support your analysis.")
     context_parts.append("=" * 60)
     return "\n".join(context_parts)
 
