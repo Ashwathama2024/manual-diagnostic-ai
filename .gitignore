@@ -1,0 +1,38 @@
+# Virtual environment
+.venv/
+venv/
+env/
+
+# User data (PDFs, processed markdown, vector index)
+data/
+
+# Runtime logs
+logs/
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# LanceDB
+*.lance/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Internal dev notes
+SESSION_NOTES.md
+
+# Temp files
+*.tmp
+_docling_tmp/
+_docling_runtime_tmp/

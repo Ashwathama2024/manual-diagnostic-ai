@@ -1,0 +1,37 @@
+paths:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  chunks_output: data/processed/chunks.jsonl   # legacy fallback; notebooks use data/processed/{nb_id}/chunks.jsonl
+  lancedb_dir: data/lancedb
+  lancedb_table: manual_chunks
+  notebooks_registry: data/notebooks.json
+
+models:
+  embedding: nomic-embed-text
+  reasoning: deepseek-r1:8b
+  vision: minicpm-v          # multimodal model for diagram/image captioning
+
+indexing:
+  min_chunk_chars: 400
+  max_chunk_chars: 1800
+  overlap_chars: 200
+  batch_size: 16
+
+retrieval:
+  mode: hybrid
+  top_k: 6
+
+chat:
+  show_thinking: false
+  history_turns: 6
+
+vision:
+  enabled: false             # CPU-only: disable by default (minicpm-v too slow on CPU)
+                             # Set true only when GPU is available or for small docs
+  timeout: 180               # seconds per image (minicpm-v on CPU needs ~2-3 min per image)
+  max_per_doc: 10            # cap to avoid runaway on diagram-heavy docs
+
+runtime:
+  # Tuned for 32 GB RAM laptop with 16 logical processors
+  ollama_num_thread: 12
+  ollama_ctx_num: 8192

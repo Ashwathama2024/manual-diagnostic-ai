@@ -1,0 +1,1056 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ManualIQ</title>
+<style>
+/* ── Design tokens ──────────────────────────────────────────── */
+:root {
+  --bg:           #0d1117;
+  --panel:        #161b22;
+  --panel2:       #21262d;
+  --border:       #30363d;
+  --text:         #c9d1d9;
+  --muted:        #8b949e;
+  --accent:       #388bfd;
+  --accent-dim:   #1f4870;
+  --green:        #238636;
+  --green-h:      #2ea043;
+  --red-bg:       #6e1a1a;
+  --red-text:     #ffa198;
+  --red-border:   #f85149;
+  --blue-text:    #79c0ff;
+  --r:            8px;
+  --font:         'Inter','Segoe UI','Helvetica Neue',sans-serif;
+  --mono:         'Consolas','Monaco',monospace;
+  --sidebar-w:    262px;
+  --nav-h:        46px;
+}
+
+/* ── Reset ──────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  font-size: 14px;
+}
+
+/* ── Top nav ────────────────────────────────────────────────── */
+#topnav {
+  height: var(--nav-h);
+  min-height: var(--nav-h);
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 18px;
+  gap: 10px;
+  z-index: 10;
+}
+#topnav .logo {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--blue-text);
+  letter-spacing: 1.2px;
+  white-space: nowrap;
+}
+#topnav .logo-sep { color: var(--border); }
+#topnav .logo-sub {
+  font-size: 0.72rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Main layout ────────────────────────────────────────────── */
+#layout {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ── Sidebar ────────────────────────────────────────────────── */
+#sidebar {
+  width: var(--sidebar-w);
+  min-width: var(--sidebar-w);
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#sidebar-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 0 8px;
+}
+
+.sb-section { padding: 0 14px 12px; }
+.sb-sep { height: 1px; background: var(--border); margin: 4px 0 8px; }
+.sb-label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 7px;
+}
+
+/* Notebook list */
+#nb-list { list-style: none; margin-bottom: 9px; }
+#nb-list li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 9px;
+  border-radius: var(--r);
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.85rem;
+  transition: background 0.12s, color 0.12s;
+  user-select: none;
+}
+#nb-list li:hover { background: var(--panel2); color: var(--text); }
+#nb-list li.active {
+  background: var(--accent-dim);
+  color: var(--blue-text);
+  font-weight: 600;
+}
+#nb-list li .nb-dot { font-size: 0.55rem; flex-shrink: 0; }
+#nb-list li.active .nb-dot { color: var(--accent); }
+#nb-list li .nb-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#nb-list li .nb-del {
+  display: none; background: none; border: none; cursor: pointer;
+  color: var(--muted); font-size: 0.8rem; padding: 0 2px; line-height: 1;
+  flex-shrink: 0;
+}
+#nb-list li:hover .nb-del { display: block; }
+#nb-list li .nb-del:hover { color: #f85149; }
+
+/* New notebook row */
+#new-nb-row { display: flex; gap: 5px; }
+#new-nb-input {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  color: var(--text);
+  padding: 5px 8px;
+  font-size: 0.8rem;
+  outline: none;
+  font-family: var(--font);
+}
+#new-nb-input::placeholder { color: var(--muted); }
+#new-nb-input:focus { border-color: var(--accent); }
+#new-nb-btn {
+  background: var(--accent-dim);
+  color: var(--blue-text);
+  border: 1px solid var(--accent);
+  border-radius: var(--r);
+  padding: 5px 9px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s;
+}
+#new-nb-btn:hover { background: #264f7a; }
+
+/* Sources list */
+#sources-list { list-style: none; margin-bottom: 9px; min-height: 24px; }
+#sources-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  border-radius: var(--r);
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.8rem;
+  transition: background 0.12s;
+  user-select: none;
+}
+#sources-list li:hover { background: var(--panel2); color: var(--text); }
+#sources-list li.selected {
+  background: rgba(248,81,73,0.12);
+  color: var(--red-text);
+  border: 1px solid var(--red-border);
+}
+#sources-list li .src-icon { font-size: 0.7rem; flex-shrink: 0; }
+#sources-list li .src-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#sources-list .no-sources { color: var(--muted); cursor: default; font-style: italic; }
+#sources-list .no-sources:hover { background: none; }
+
+/* Upload */
+#upload-wrap { margin-bottom: 7px; }
+#upload-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  background: var(--panel2);
+  border: 1.5px dashed var(--border);
+  border-radius: var(--r);
+  color: var(--muted);
+  padding: 8px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+#upload-label:hover { border-color: var(--accent); color: var(--text); }
+#upload-label.busy { border-color: #3fb950; color: #3fb950; cursor: not-allowed; }
+#upload-progress {
+  font-size: 0.76rem;
+  color: #3fb950;
+  font-family: var(--mono);
+  margin-top: 5px;
+  min-height: 16px;
+}
+
+/* Remove button */
+#remove-btn {
+  width: 100%;
+  background: var(--red-bg);
+  color: var(--red-text);
+  border: 1px solid var(--red-border);
+  border-radius: var(--r);
+  padding: 6px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s;
+  margin-bottom: 8px;
+}
+#remove-btn:hover { background: #8b2020; }
+#remove-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Stats */
+#sidebar-stats {
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-family: var(--mono);
+  padding: 6px 14px 10px;
+  border-top: 1px solid var(--border);
+}
+
+/* ── Chat panel ─────────────────────────────────────────────── */
+#chat-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg);
+  min-width: 0;
+}
+
+/* Notebook title bar */
+#nb-title-bar {
+  height: 42px;
+  min-height: 42px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  gap: 14px;
+  flex-shrink: 0;
+}
+#nb-title-text {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--blue-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#nb-stats-badge {
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+
+/* Messages area */
+#messages-area {
+  flex: 1;
+  overflow-y: auto;
+  padding: 22px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  scroll-behavior: smooth;
+}
+#empty-state {
+  color: var(--muted);
+  font-size: 0.88rem;
+  text-align: center;
+  margin-top: 80px;
+  line-height: 1.8;
+}
+#empty-state .em-icon { font-size: 2rem; display: block; margin-bottom: 10px; }
+
+/* Message bubbles */
+.msg { display: flex; flex-direction: column; max-width: 82%; }
+.msg.user { align-self: flex-end; align-items: flex-end; }
+.msg.assistant { align-self: flex-start; align-items: flex-start; }
+
+.msg-role {
+  font-size: 0.68rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+
+.msg-bubble {
+  padding: 11px 15px;
+  border-radius: 10px;
+  font-size: 0.9rem;
+  line-height: 1.68;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.msg.user .msg-bubble {
+  background: var(--panel2);
+  color: var(--text);
+  border-bottom-right-radius: 3px;
+}
+.msg.assistant .msg-bubble {
+  background: var(--panel);
+  color: var(--text);
+  border-left: 3px solid var(--accent);
+  border-bottom-left-radius: 3px;
+}
+.msg.assistant.error .msg-bubble {
+  border-left-color: var(--red-border);
+  color: var(--red-text);
+}
+
+/* Streaming cursor */
+.stream-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  background: var(--accent);
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  animation: blink 0.75s step-end infinite;
+}
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+.think-spinner {
+  color: var(--muted); font-style: italic; font-size: 0.88rem;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+@keyframes pulse { 0%,100%{opacity:0.4} 50%{opacity:1} }
+
+/* Input row */
+#input-area {
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  padding: 12px 20px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+#input-row {
+  display: flex;
+  gap: 9px;
+  align-items: flex-end;
+}
+#msg-input {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  color: var(--text);
+  padding: 9px 13px;
+  font-size: 0.9rem;
+  font-family: var(--font);
+  resize: none;
+  outline: none;
+  line-height: 1.5;
+  min-height: 40px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+#msg-input::placeholder { color: var(--muted); }
+#msg-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(56,139,253,0.18); }
+#send-btn {
+  background: var(--green);
+  color: #fff;
+  border: none;
+  border-radius: var(--r);
+  padding: 9px 18px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s;
+  align-self: flex-end;
+}
+#send-btn:hover { background: var(--green-h); }
+#send-btn:disabled { background: var(--panel2); color: var(--muted); cursor: not-allowed; }
+
+#input-hint {
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+
+/* Citations panel */
+#citations-panel {
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  flex-shrink: 0;
+  max-height: 150px;
+  overflow-y: auto;
+  padding: 9px 20px 10px;
+}
+#citations-title {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 5px;
+}
+#citations-list { list-style: none; display: flex; flex-direction: column; gap: 3px; }
+#citations-list li {
+  font-family: var(--mono);
+  font-size: 0.76rem;
+  color: var(--muted);
+  line-height: 1.4;
+}
+#citations-list li .ci-num { color: var(--accent); font-weight: 700; margin-right: 5px; }
+#citations-list li .ci-score { color: var(--panel2); font-size: 0.7rem; }
+
+/* Toast */
+#toast {
+  position: fixed;
+  bottom: 22px;
+  right: 22px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  color: var(--text);
+  padding: 9px 16px;
+  font-size: 0.83rem;
+  z-index: 9999;
+  opacity: 0;
+  transition: opacity 0.25s;
+  pointer-events: none;
+  max-width: 340px;
+}
+#toast.show { opacity: 1; }
+#toast.success { border-color: #3fb950; color: #3fb950; }
+#toast.error   { border-color: var(--red-border); color: var(--red-text); }
+
+/* Scrollbars */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+
+/* Utility */
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<!-- ── Top nav ─────────────────────────────────────────────── -->
+<nav id="topnav">
+  <span class="logo">⚙ ManualIQ</span>
+  <span class="logo-sep">·</span>
+  <span class="logo-sub">Offline reasoning over technical manuals — zero hallucination · fully local</span>
+</nav>
+
+<!-- ── Main layout ────────────────────────────────────────── -->
+<div id="layout">
+
+  <!-- ── Sidebar ─────────────────────────────────────────── -->
+  <aside id="sidebar">
+    <div id="sidebar-scroll">
+
+      <!-- Notebooks section -->
+      <div class="sb-section">
+        <div class="sb-label">Notebooks</div>
+        <ul id="nb-list"></ul>
+        <div id="new-nb-row">
+          <input id="new-nb-input" type="text" placeholder="New notebook name…" maxlength="60">
+          <button id="new-nb-btn">+ New</button>
+        </div>
+      </div>
+
+      <div class="sb-sep"></div>
+
+      <!-- Sources section -->
+      <div class="sb-section">
+        <div class="sb-label">Sources</div>
+        <ul id="sources-list">
+          <li class="no-sources">— select a notebook —</li>
+        </ul>
+
+        <div id="upload-wrap">
+          <label id="upload-label" for="upload-input">
+            ⬆ Upload PDF
+          </label>
+          <input id="upload-input" type="file" accept=".pdf" multiple style="display:none">
+          <div id="upload-progress"></div>
+        </div>
+
+        <button id="remove-btn" disabled>🗑 Remove Selected</button>
+      </div>
+
+    </div>
+
+    <!-- Stats pinned at bottom of sidebar -->
+    <div id="sidebar-stats">No notebook selected</div>
+  </aside>
+
+  <!-- ── Chat panel ──────────────────────────────────────── -->
+  <main id="chat-panel">
+
+    <!-- Notebook title bar -->
+    <div id="nb-title-bar">
+      <span id="nb-title-text">— Select a notebook —</span>
+      <span id="nb-stats-badge"></span>
+    </div>
+
+    <!-- Messages -->
+    <div id="messages-area">
+      <div id="empty-state">
+        <span class="em-icon">📖</span>
+        Select a notebook on the left, upload a PDF,<br>then ask any question about your manuals.
+      </div>
+    </div>
+
+    <!-- Input area -->
+    <div id="input-area">
+      <div id="input-row">
+        <textarea id="msg-input" rows="1"
+          placeholder="Ask a question about your manuals…"></textarea>
+        <button id="send-btn">Send ➤</button>
+      </div>
+      <div id="input-hint">Enter to send · Shift+Enter for new line</div>
+    </div>
+
+    <!-- Citations -->
+    <div id="citations-panel" class="hidden">
+      <div id="citations-title">Retrieved Chunks (Citations)</div>
+      <ul id="citations-list"></ul>
+    </div>
+
+  </main>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<!-- ── Application JS ─────────────────────────────────────── -->
+<script>
+'use strict';
+
+/* ── State ────────────────────────────────────────────────── */
+const State = {
+  activeNbId:     null,
+  activeNbName:   null,
+  selectedSource: null,
+  history:        [],     // [{role, content}]
+  streaming:      false,
+};
+
+/* ── API ──────────────────────────────────────────────────── */
+const API = {
+  async _json(url, opts = {}) {
+    const r = await fetch(url, opts);
+    if (!r.ok) {
+      let detail = '';
+      try { detail = (await r.json()).detail || ''; } catch { detail = await r.text(); }
+      throw new Error(detail || r.statusText);
+    }
+    return r.json();
+  },
+
+  getNotebooks()        { return this._json('/api/notebooks'); },
+  createNotebook(name)  { return this._json('/api/notebooks', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name}),
+  }); },
+  getSources(nbId)      { return this._json(`/api/notebooks/${nbId}/sources`); },
+  getStats(nbId)        { return this._json(`/api/notebooks/${nbId}/stats`); },
+  removeSource(nbId, src) {
+    return this._json(`/api/notebooks/${nbId}/sources/${encodeURIComponent(src)}`, {method:'DELETE'});
+  },
+  deleteNotebook(nbId) {
+    return this._json(`/api/notebooks/${nbId}`, {method:'DELETE'});
+  },
+
+  uploadFile(nbId, file) {
+    const fd = new FormData();
+    fd.append('file', file);
+    return this._json(`/api/notebooks/${nbId}/upload`, {method:'POST', body:fd});
+  },
+
+  // Returns raw Response for SSE
+  chatSSE(nbId, message, history) {
+    return fetch('/api/chat', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({nb_id: nbId, message, history}),
+    });
+  },
+};
+
+/* ── Toast ────────────────────────────────────────────────── */
+const Toast = (() => {
+  const el = document.getElementById('toast');
+  let timer = null;
+  return {
+    show(msg, type = '') {
+      el.textContent = msg;
+      el.className = `show ${type}`;
+      clearTimeout(timer);
+      timer = setTimeout(() => el.className = '', 4500);
+    },
+  };
+})();
+
+/* ── Render ───────────────────────────────────────────────── */
+const Render = {
+  notebooks(nbs, activeId) {
+    const ul = document.getElementById('nb-list');
+    ul.innerHTML = '';
+    nbs.forEach(nb => {
+      const li = document.createElement('li');
+      if (nb.id === activeId) li.classList.add('active');
+
+      const dot  = document.createElement('span');
+      dot.className = 'nb-dot';
+      dot.textContent = nb.id === activeId ? '●' : '○';
+
+      const name = document.createElement('span');
+      name.className = 'nb-name';
+      name.textContent = nb.name;
+      name.title = nb.name;
+
+      const delBtn = document.createElement('button');
+      delBtn.className = 'nb-del';
+      delBtn.title = 'Delete notebook';
+      delBtn.textContent = '✕';
+      delBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        Actions.deleteNotebook(nb.id, nb.name);
+      });
+
+      li.appendChild(dot);
+      li.appendChild(name);
+      li.appendChild(delBtn);
+      li.addEventListener('click', () => Actions.selectNotebook(nb.id, nb.name));
+      ul.appendChild(li);
+    });
+  },
+
+  sources(sources, selected) {
+    const ul = document.getElementById('sources-list');
+    const removeBtn = document.getElementById('remove-btn');
+    ul.innerHTML = '';
+
+    if (!sources.length) {
+      const li = document.createElement('li');
+      li.className = 'no-sources';
+      li.textContent = '(no sources — upload a PDF)';
+      ul.appendChild(li);
+      removeBtn.disabled = true;
+      return;
+    }
+
+    sources.forEach(s => {
+      const li = document.createElement('li');
+      if (s === selected) li.classList.add('selected');
+
+      const icon = document.createElement('span');
+      icon.className = 'src-icon';
+      icon.textContent = '📄';
+
+      const name = document.createElement('span');
+      name.className = 'src-name';
+      name.textContent = s;
+      name.title = s;
+
+      li.appendChild(icon);
+      li.appendChild(name);
+      li.addEventListener('click', () => {
+        State.selectedSource = (State.selectedSource === s) ? null : s;
+        Render.sources(sources, State.selectedSource);
+      });
+      ul.appendChild(li);
+    });
+
+    removeBtn.disabled = !selected;
+  },
+
+  stats(stats) {
+    const badge  = document.getElementById('nb-stats-badge');
+    const bottom = document.getElementById('sidebar-stats');
+    const s = stats.docs !== 1 ? 's' : '';
+    badge.textContent  = `${stats.docs} source${s} · ${stats.chunks} chunks`;
+    bottom.textContent = `Docs: ${stats.docs}  ·  Chunks: ${stats.chunks}`;
+  },
+
+  notebookTitle(name) {
+    document.getElementById('nb-title-text').textContent =
+      name ? `📓 ${name}` : '— Select a notebook —';
+  },
+
+  clearMessages() {
+    const area = document.getElementById('messages-area');
+    area.innerHTML = `
+      <div id="empty-state">
+        <span class="em-icon">📖</span>
+        Notebook switched. Upload a PDF and ask a question.
+      </div>`;
+    document.getElementById('citations-panel').classList.add('hidden');
+  },
+
+  appendMessage(role, text, isError = false) {
+    const area = document.getElementById('messages-area');
+    const empty = area.querySelector('#empty-state');
+    if (empty) empty.remove();
+
+    const wrap = document.createElement('div');
+    wrap.className = `msg ${role}${isError ? ' error' : ''}`;
+
+    const roleEl = document.createElement('div');
+    roleEl.className = 'msg-role';
+    roleEl.textContent = role === 'user' ? 'You' : 'ManualIQ';
+
+    const bubble = document.createElement('div');
+    bubble.className = 'msg-bubble';
+    if (text) bubble.textContent = text;
+
+    wrap.appendChild(roleEl);
+    wrap.appendChild(bubble);
+    area.appendChild(wrap);
+    area.scrollTop = area.scrollHeight;
+    return bubble;
+  },
+
+  updateCitations(citations) {
+    const panel = document.getElementById('citations-panel');
+    const list  = document.getElementById('citations-list');
+    if (!citations || !citations.length) {
+      panel.classList.add('hidden');
+      return;
+    }
+    list.innerHTML = '';
+    citations.forEach(c => {
+      const li = document.createElement('li');
+      const scoreStr = c.score != null ? c.score : 'n/a';
+      li.innerHTML =
+        `<span class="ci-num">[${c.index}]</span>` +
+        `${escHtml(c.source)} › ${escHtml(c.section)} ` +
+        `<span class="ci-score">(score=${scoreStr})</span>`;
+      list.appendChild(li);
+    });
+    panel.classList.remove('hidden');
+  },
+};
+
+/* ── Streaming chat ───────────────────────────────────────── */
+async function streamChat(nbId, message) {
+  State.streaming = true;
+  document.getElementById('send-btn').disabled = true;
+
+  Render.appendMessage('user', message);
+
+  const bubble = Render.appendMessage('assistant', '');
+  const cursor = document.createElement('span');
+  cursor.className = 'stream-cursor';
+  bubble.appendChild(cursor);
+
+  const area = document.getElementById('messages-area');
+  let fullText = '';
+
+  try {
+    const resp = await API.chatSSE(nbId, message, State.history);
+    if (!resp.ok || !resp.body) {
+      cursor.remove();
+      bubble.textContent = `⚠ HTTP ${resp.status}: ${resp.statusText}`;
+      bubble.closest('.msg').classList.add('error');
+      return;
+    }
+
+    const reader  = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+
+      buf += decoder.decode(value, {stream: true});
+      const lines = buf.split('\n');
+      buf = lines.pop() ?? '';
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const raw = line.slice(6).trim();
+        if (!raw) continue;
+
+        let evt;
+        try { evt = JSON.parse(raw); } catch { continue; }
+
+        if (evt.type === 'thinking') {
+          if (!fullText) {
+            bubble.innerHTML = '<span class="think-spinner">🧠 Reasoning…</span>';
+            bubble.appendChild(cursor);
+          }
+
+        } else if (evt.type === 'token') {
+          fullText += evt.content;
+          bubble.textContent = fullText;
+          bubble.appendChild(cursor);
+          area.scrollTop = area.scrollHeight;
+
+        } else if (evt.type === 'done') {
+          cursor.remove();
+          Render.updateCitations(evt.citations || []);
+          State.history.push({role: 'user',      content: message});
+          State.history.push({role: 'assistant',  content: fullText});
+
+        } else if (evt.type === 'error') {
+          cursor.remove();
+          bubble.textContent = `⚠ ${evt.content}`;
+          bubble.closest('.msg').classList.add('error');
+        }
+      }
+    }
+  } catch (err) {
+    cursor.remove();
+    bubble.textContent = `⚠ Network error: ${err.message}`;
+    bubble.closest('.msg').classList.add('error');
+  } finally {
+    State.streaming = false;
+    document.getElementById('send-btn').disabled = false;
+    document.getElementById('msg-input').focus();
+  }
+}
+
+/* ── Actions ──────────────────────────────────────────────── */
+const Actions = {
+
+  async init() {
+    try {
+      const nbs = await API.getNotebooks();
+      Render.notebooks(nbs, null);
+      if (nbs.length > 0) {
+        await this.selectNotebook(nbs[0].id, nbs[0].name);
+      }
+    } catch (e) {
+      Toast.show(`Init failed: ${e.message}`, 'error');
+    }
+  },
+
+  async createNotebook() {
+    const input = document.getElementById('new-nb-input');
+    const name  = input.value.trim();
+    if (!name) { Toast.show('Enter a notebook name', 'error'); return; }
+    try {
+      await API.createNotebook(name);
+      input.value = '';
+      const nbs = await API.getNotebooks();
+      const nb  = nbs.find(n => n.name === name);
+      if (nb) {
+        Render.notebooks(nbs, nb.id);
+        await this.selectNotebook(nb.id, nb.name);
+      }
+      Toast.show(`Notebook "${name}" created`, 'success');
+    } catch (e) { Toast.show(e.message, 'error'); }
+  },
+
+  async selectNotebook(nbId, nbName) {
+    State.activeNbId    = nbId;
+    State.activeNbName  = nbName;
+    State.history       = [];
+    State.selectedSource = null;
+
+    Render.notebookTitle(nbName);
+    Render.clearMessages();
+
+    try {
+      const nbs = await API.getNotebooks();
+      Render.notebooks(nbs, nbId);
+
+      const [srcData, stats] = await Promise.all([
+        API.getSources(nbId),
+        API.getStats(nbId),
+      ]);
+      Render.sources(srcData.sources, null);
+      Render.stats(stats);
+    } catch (e) {
+      Toast.show(`Failed to load notebook: ${e.message}`, 'error');
+    }
+  },
+
+  async uploadFiles(files) {
+    if (!State.activeNbId) {
+      Toast.show('Select a notebook first', 'error');
+      return;
+    }
+    const label    = document.getElementById('upload-label');
+    const progress = document.getElementById('upload-progress');
+    label.classList.add('busy');
+
+    for (const file of files) {
+      progress.textContent = `⏳ ${file.name} …`;
+      try {
+        const res = await API.uploadFile(State.activeNbId, file);
+        if (res.cached) {
+          Toast.show(`✓ ${res.source} — already indexed (skipped re-embedding)`, 'success');
+        } else {
+          Toast.show(`✓ ${res.source}  →  ${res.chunks} chunks indexed`, 'success');
+        }
+      } catch (e) {
+        Toast.show(`⚠ ${file.name}: ${e.message}`, 'error');
+      }
+    }
+
+    progress.textContent = '';
+    label.classList.remove('busy');
+
+    try {
+      const [srcData, stats] = await Promise.all([
+        API.getSources(State.activeNbId),
+        API.getStats(State.activeNbId),
+      ]);
+      State.selectedSource = null;
+      Render.sources(srcData.sources, null);
+      Render.stats(stats);
+    } catch(e) { /* non-fatal */ }
+  },
+
+  async removeSource() {
+    if (!State.activeNbId || !State.selectedSource) return;
+    const name = State.selectedSource;
+    if (!confirm(`Remove "${name}" from this notebook?\n\nThis cannot be undone.`)) return;
+    try {
+      await API.removeSource(State.activeNbId, name);
+      State.selectedSource = null;
+      const [srcData, stats] = await Promise.all([
+        API.getSources(State.activeNbId),
+        API.getStats(State.activeNbId),
+      ]);
+      Render.sources(srcData.sources, null);
+      Render.stats(stats);
+      Toast.show(`Removed "${name}"`, 'success');
+    } catch (e) { Toast.show(e.message, 'error'); }
+  },
+
+  async deleteNotebook(nbId, nbName) {
+    if (!confirm(`Delete notebook "${nbName}" and ALL its data?\n\nThis cannot be undone.`)) return;
+    try {
+      await API.deleteNotebook(nbId);
+      Toast.show(`Deleted "${nbName}"`, 'success');
+      const nbs = await API.getNotebooks();
+      if (nbs.length > 0) {
+        Render.notebooks(nbs, nbs[0].id);
+        await this.selectNotebook(nbs[0].id, nbs[0].name);
+      } else {
+        Render.notebooks([], null);
+        Render.notebookTitle('');
+        Render.clearMessages();
+        Render.sources([], null);
+        Render.stats({ docs: 0, chunks: 0 });
+        State.activeNbId = null;
+        State.activeNbName = null;
+      }
+    } catch (e) { Toast.show(e.message, 'error'); }
+  },
+
+  async sendMessage() {
+    if (State.streaming) return;
+    const input   = document.getElementById('msg-input');
+    const message = input.value.trim();
+    if (!message) return;
+    if (!State.activeNbId) { Toast.show('Select a notebook first', 'error'); return; }
+    input.value = '';
+    autoResizeTextarea(input);
+    await streamChat(State.activeNbId, message);
+  },
+};
+
+/* ── Helpers ──────────────────────────────────────────────── */
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function autoResizeTextarea(ta) {
+  ta.style.height = 'auto';
+  ta.style.height = Math.min(ta.scrollHeight, 120) + 'px';
+}
+
+/* ── Event wiring ─────────────────────────────────────────── */
+document.addEventListener('DOMContentLoaded', () => {
+
+  document.getElementById('new-nb-btn').addEventListener('click',
+    () => Actions.createNotebook());
+  document.getElementById('new-nb-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') Actions.createNotebook();
+  });
+
+  document.getElementById('upload-input').addEventListener('change', e => {
+    if (e.target.files.length) {
+      Actions.uploadFiles(Array.from(e.target.files));
+      e.target.value = '';
+    }
+  });
+  document.getElementById('upload-label').addEventListener('click', () => {
+    if (!State.activeNbId) {
+      Toast.show('Select a notebook first', 'error');
+      return;
+    }
+    document.getElementById('upload-input').click();
+  });
+
+  document.getElementById('remove-btn').addEventListener('click',
+    () => Actions.removeSource());
+
+  document.getElementById('send-btn').addEventListener('click',
+    () => Actions.sendMessage());
+
+  const msgInput = document.getElementById('msg-input');
+  msgInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      Actions.sendMessage();
+    }
+  });
+  msgInput.addEventListener('input', () => autoResizeTextarea(msgInput));
+
+  // Drag-and-drop PDF onto sidebar
+  document.getElementById('sidebar').addEventListener('dragover', e => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  document.getElementById('sidebar').addEventListener('drop', e => {
+    e.preventDefault();
+    const files = Array.from(e.dataTransfer.files).filter(f => f.name.endsWith('.pdf'));
+    if (files.length) Actions.uploadFiles(files);
+  });
+
+  Actions.init();
+});
+</script>
+</body>
+</html>

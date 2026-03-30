@@ -1,0 +1,5 @@
+[project]
+name = "offline-master-stack"
+version = "0.1.0"
+description = "Fully offline local RAG + reasoning stack for technical manuals"
+requires-python = ">=3.11"
