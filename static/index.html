@@ -88,12 +88,14 @@ body {
 }
 #sidebar-scroll {
   flex: 1;
+  display: flex;
+  flex-direction: column;
   overflow-y: auto;
   padding: 14px 0 8px;
 }
 
-.sb-section { padding: 0 14px 12px; }
-.sb-sep { height: 1px; background: var(--border); margin: 4px 0 8px; }
+.sb-section { padding: 0 14px 10px; flex-shrink: 0; }
+.sb-sep { height: 1px; background: var(--border); margin: 2px 0 8px; }
 .sb-label {
   font-size: 0.68rem;
   font-weight: 700;
@@ -103,39 +105,72 @@ body {
   margin-bottom: 7px;
 }
 
-/* Notebook list */
-#nb-list { list-style: none; margin-bottom: 9px; }
+/* Notebook trigger button */
+#nb-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--panel2);
+  cursor: pointer;
+  user-select: none;
+  margin-bottom: 4px;
+  transition: border-color 0.15s, background 0.12s;
+}
+#nb-trigger:hover  { border-color: var(--accent); background: #1d2330; }
+#nb-trigger.open   { border-color: var(--accent); background: #1d2330; }
+#nb-trigger-name   { flex: 1; font-size: 0.88rem; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#nb-trigger-count  { font-size: 0.72rem; color: var(--muted); font-family: var(--mono); flex-shrink: 0; }
+#nb-trigger-chevron { color: var(--muted); font-size: 0.72rem; flex-shrink: 0; transition: transform 0.2s; line-height: 1; }
+#nb-trigger.open #nb-trigger-chevron { transform: rotate(180deg); }
+
+/* Floating dropdown — portal fixed, escapes sidebar overflow */
+#nb-dropdown {
+  position: fixed;
+  z-index: 500;
+  background: rgba(14, 18, 26, 0.93);
+  backdrop-filter: blur(16px) saturate(1.6);
+  -webkit-backdrop-filter: blur(16px) saturate(1.6);
+  border: 1px solid rgba(56, 139, 253, 0.4);
+  border-radius: var(--r);
+  box-shadow: 0 12px 48px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.05);
+  padding: 6px;
+  overflow-y: auto;
+  max-height: 360px;
+}
+/* List inside dropdown */
+#nb-list { list-style: none; }
 #nb-list li {
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 6px 9px;
-  border-radius: var(--r);
+  gap: 8px;
+  padding: 9px 11px;
+  border-radius: calc(var(--r) - 1px);
   cursor: pointer;
   color: var(--muted);
-  font-size: 0.85rem;
-  transition: background 0.12s, color 0.12s;
+  font-size: 0.88rem;
+  transition: background 0.1s, color 0.1s;
   user-select: none;
 }
-#nb-list li:hover { background: var(--panel2); color: var(--text); }
-#nb-list li.active {
-  background: var(--accent-dim);
-  color: var(--blue-text);
-  font-weight: 600;
-}
+#nb-list li:hover { background: rgba(56,139,253,0.13); color: var(--text); }
+#nb-list li.active { background: var(--accent-dim); color: var(--blue-text); font-weight: 600; }
 #nb-list li .nb-dot { font-size: 0.55rem; flex-shrink: 0; }
 #nb-list li.active .nb-dot { color: var(--accent); }
 #nb-list li .nb-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #nb-list li .nb-del {
   display: none; background: none; border: none; cursor: pointer;
-  color: var(--muted); font-size: 0.8rem; padding: 0 2px; line-height: 1;
-  flex-shrink: 0;
+  color: var(--muted); font-size: 0.8rem; padding: 0 2px; line-height: 1; flex-shrink: 0;
 }
 #nb-list li:hover .nb-del { display: block; }
 #nb-list li .nb-del:hover { color: #f85149; }
 
+/* Separator + new-row inside dropdown */
+.nb-dd-sep { height: 1px; background: rgba(48,54,61,0.8); margin: 6px 2px; }
+
 /* New notebook row */
-#new-nb-row { display: flex; gap: 5px; }
+#new-nb-row { display: flex; gap: 5px; margin-top: 8px; flex-shrink: 0; }
 #new-nb-input {
   flex: 1;
   background: var(--bg);
@@ -164,7 +199,13 @@ body {
 #new-nb-btn:hover { background: #264f7a; }
 
 /* Sources list */
-#sources-list { list-style: none; margin-bottom: 9px; min-height: 24px; }
+#sources-list {
+  list-style: none;
+  margin-bottom: 9px;
+  min-height: 24px;
+  max-height: 168px;   /* ~6 items; rest scrollable */
+  overflow-y: auto;
+}
 #sources-list li {
   display: flex;
   align-items: center;
@@ -177,13 +218,16 @@ body {
   transition: background 0.12s;
   user-select: none;
 }
-#sources-list li:hover { background: var(--panel2); color: var(--text); }
 #sources-list li.selected {
-  background: rgba(248,81,73,0.12);
-  color: var(--red-text);
-  border: 1px solid var(--red-border);
+  background: var(--panel2);
+  color: var(--text);
 }
 #sources-list li .src-icon { font-size: 0.7rem; flex-shrink: 0; }
+#sources-list li .src-checkbox {
+  margin-right: 6px;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
 #sources-list li .src-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #sources-list .no-sources { color: var(--muted); cursor: default; font-style: italic; }
 #sources-list .no-sources:hover { background: none; }
@@ -192,23 +236,39 @@ body {
 #upload-wrap { margin-bottom: 7px; }
 #upload-label {
   display: flex;
+  flex-direction: row;
   align-items: center;
   justify-content: center;
-  gap: 7px;
-  background: var(--panel2);
-  border: 1.5px dashed var(--border);
+  gap: 6px;
+  background: linear-gradient(135deg, #f97316 0%, #f59e0b 100%);
+  border: none;
   border-radius: var(--r);
-  color: var(--muted);
-  padding: 8px;
+  color: #fff;
+  padding: 6px 10px;
   font-size: 0.8rem;
+  font-weight: 600;
   cursor: pointer;
-  transition: border-color 0.15s, color 0.15s;
+  letter-spacing: 0.3px;
+  box-shadow: 0 2px 12px rgba(249,115,22,0.35), 0 1px 3px rgba(0,0,0,0.4);
+  transition: filter 0.15s, box-shadow 0.15s, transform 0.1s;
+  user-select: none;
 }
-#upload-label:hover { border-color: var(--accent); color: var(--text); }
-#upload-label.busy { border-color: #3fb950; color: #3fb950; cursor: not-allowed; }
+#upload-label:hover {
+  filter: brightness(1.12);
+  box-shadow: 0 4px 20px rgba(249,115,22,0.5), 0 1px 4px rgba(0,0,0,0.4);
+  transform: translateY(-1px);
+}
+#upload-label:active { transform: translateY(0); filter: brightness(0.95); }
+#upload-label.busy {
+  background: linear-gradient(135deg, #16a34a 0%, #15803d 100%);
+  box-shadow: 0 2px 12px rgba(22,163,74,0.35);
+  cursor: not-allowed;
+  filter: none;
+  transform: none;
+}
 #upload-progress {
-  font-size: 0.76rem;
-  color: #3fb950;
+  font-size: 0.74rem;
+  color: #f97316;
   font-family: var(--mono);
   margin-top: 5px;
   min-height: 16px;
@@ -280,6 +340,7 @@ body {
 /* Messages area */
 #messages-area {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 22px 28px;
   display: flex;
@@ -351,6 +412,42 @@ body {
 }
 @keyframes pulse { 0%,100%{opacity:0.4} 50%{opacity:1} }
 
+/* Reasoning block */
+.reasoning-block {
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--panel2);
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+.reasoning-block summary {
+  padding: 5px 12px;
+  font-size: 0.76rem;
+  color: var(--muted);
+  font-style: italic;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.reasoning-block summary:hover { color: var(--text); }
+.reasoning-block summary::before { content: '▶'; font-size: 0.6rem; transition: transform 0.2s; }
+.reasoning-block[open] summary::before { transform: rotate(90deg); }
+.reasoning-content {
+  padding: 8px 14px;
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+  line-height: 1.55;
+}
+
 /* Input row */
 #input-area {
   border-top: 1px solid var(--border);
@@ -400,6 +497,23 @@ body {
 #send-btn:hover { background: var(--green-h); }
 #send-btn:disabled { background: var(--panel2); color: var(--muted); cursor: not-allowed; }
 
+/* New chat button */
+#new-chat-btn {
+  background: var(--panel2);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 9px 11px;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  align-self: flex-end;
+  flex-shrink: 0;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+#new-chat-btn:hover { background: var(--panel); color: var(--text); border-color: var(--accent); }
+#new-chat-btn:title { /* tooltip via title attr */ }
+
 #input-hint {
   font-size: 0.7rem;
   color: var(--muted);
@@ -410,9 +524,9 @@ body {
   border-top: 1px solid var(--border);
   background: var(--panel);
   flex-shrink: 0;
-  max-height: 150px;
+  max-height: 75px;
   overflow-y: auto;
-  padding: 9px 20px 10px;
+  padding: 5px 20px 6px;
 }
 #citations-title {
   font-size: 0.68rem;
@@ -461,6 +575,53 @@ body {
 
 /* Utility */
 .hidden { display: none !important; }
+
+/* ── Markdown rendering inside assistant bubbles ────────────── */
+.msg-bubble h1 {
+  font-size: 1.08rem; font-weight: 700; color: var(--blue-text);
+  margin: 12px 0 5px; line-height: 1.3;
+}
+.msg-bubble h2 {
+  font-size: 0.97rem; font-weight: 700; color: var(--text);
+  margin: 10px 0 4px; padding-bottom: 3px;
+  border-bottom: 1px solid var(--border);
+}
+.msg-bubble h3 {
+  font-size: 0.9rem; font-weight: 700; color: var(--text);
+  margin: 8px 0 3px;
+}
+.msg-bubble p  { margin: 4px 0; line-height: 1.65; }
+.msg-bubble ul { margin: 4px 0 4px 18px; padding: 0; list-style: disc; }
+.msg-bubble ol { margin: 4px 0 4px 18px; padding: 0; list-style: decimal; }
+.msg-bubble li { margin: 2px 0; line-height: 1.55; }
+.msg-bubble strong { font-weight: 700; color: var(--text); }
+.msg-bubble em     { font-style: italic; color: var(--muted); }
+.msg-bubble code {
+  font-family: var(--mono); font-size: 0.81rem;
+  background: var(--panel2); border: 1px solid var(--border);
+  padding: 1px 5px; border-radius: 4px;
+}
+.msg-bubble pre {
+  background: var(--panel2); border: 1px solid var(--border);
+  border-radius: var(--r); padding: 10px 14px;
+  overflow-x: auto; margin: 6px 0;
+}
+.msg-bubble pre code { background: none; border: none; padding: 0; font-size: 0.81rem; }
+.msg-bubble hr { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
+.msg-bubble del { color: var(--muted); text-decoration: line-through; }
+.msg-bubble h4 { font-size: 0.88rem; font-weight: 700; color: var(--muted); margin: 6px 0 2px; }
+
+/* Tables */
+.md-table-wrap { overflow-x: auto; margin: 10px 0; border-radius: var(--r); border: 1px solid var(--border); }
+.msg-bubble table { border-collapse: collapse; min-width: 100%; font-size: 0.83rem; }
+.msg-bubble th,
+.msg-bubble td   { border: 1px solid var(--border); padding: 7px 13px; text-align: left; line-height: 1.45; vertical-align: top; }
+.msg-bubble th   { background: var(--panel2); color: var(--blue-text); font-weight: 700; white-space: nowrap; }
+.msg-bubble tr:nth-child(even) td { background: rgba(255,255,255,0.025); }
+.msg-bubble tr:hover td { background: rgba(56,139,253,0.055); transition: background 0.1s; }
+
+/* After markdown rendering, switch off pre-wrap so HTML blocks flow normally */
+.msg-bubble.rendered { white-space: normal; }
 </style>
 </head>
 <body>
@@ -482,7 +643,11 @@ body {
       <!-- Notebooks section -->
       <div class="sb-section">
         <div class="sb-label">Notebooks</div>
-        <ul id="nb-list"></ul>
+        <div id="nb-trigger">
+          <span id="nb-trigger-name">— select a notebook —</span>
+          <span id="nb-trigger-count"></span>
+          <span id="nb-trigger-chevron">▾</span>
+        </div>
         <div id="new-nb-row">
           <input id="new-nb-input" type="text" placeholder="New notebook name…" maxlength="60">
           <button id="new-nb-btn">+ New</button>
@@ -497,12 +662,13 @@ body {
         <ul id="sources-list">
           <li class="no-sources">— select a notebook —</li>
         </ul>
+        <div style="font-size: 0.7rem; color: var(--muted); margin-bottom: 8px; text-align: center;">Checked sources are used for chat</div>
 
         <div id="upload-wrap">
           <label id="upload-label" for="upload-input">
-            ⬆ Upload PDF
+            ⬆ Upload PDF / DOCX<span style="font-size:0.65rem;opacity:0.6;margin-left:5px;">· max 200 MB</span>
           </label>
-          <input id="upload-input" type="file" accept=".pdf" multiple style="display:none">
+          <input id="upload-input" type="file" accept=".pdf,.docx,.doc" multiple style="display:none">
           <div id="upload-progress"></div>
         </div>
 
@@ -535,11 +701,12 @@ body {
     <!-- Input area -->
     <div id="input-area">
       <div id="input-row">
+        <button id="new-chat-btn" title="New chat">↺</button>
         <textarea id="msg-input" rows="1"
           placeholder="Ask a question about your manuals…"></textarea>
         <button id="send-btn">Send ➤</button>
       </div>
-      <div id="input-hint">Enter to send · Shift+Enter for new line</div>
+      <div id="input-hint">Enter to send · Shift+Enter for new line · ↺ to start new chat</div>
     </div>
 
     <!-- Citations -->
@@ -554,15 +721,47 @@ body {
 <!-- Toast -->
 <div id="toast"></div>
 
+<!-- Notebook dropdown portal — selection only, no create row -->
+<div id="nb-dropdown" class="hidden">
+  <ul id="nb-list"></ul>
+</div>
+
 <!-- ── Application JS ─────────────────────────────────────── -->
 <script>
 'use strict';
+
+/* ── Notebook dropdown controller ────────────────────────── */
+const NbDropdown = {
+  _open: false,
+
+  open() {
+    const trigger  = document.getElementById('nb-trigger');
+    const dropdown = document.getElementById('nb-dropdown');
+    const rect = trigger.getBoundingClientRect();
+    // Position flush with trigger, same width, 4px gap below
+    dropdown.style.top   = (rect.bottom + 4) + 'px';
+    dropdown.style.left  = rect.left + 'px';
+    dropdown.style.width = rect.width + 'px';
+    dropdown.classList.remove('hidden');
+    trigger.classList.add('open');
+    this._open = true;
+  },
+
+  close() {
+    document.getElementById('nb-dropdown').classList.add('hidden');
+    document.getElementById('nb-trigger').classList.remove('open');
+    this._open = false;
+  },
+
+  toggle() { this._open ? this.close() : this.open(); },
+};
 
 /* ── State ────────────────────────────────────────────────── */
 const State = {
   activeNbId:     null,
   activeNbName:   null,
-  selectedSource: null,
+  activeNbCat:    null,
+  selectedSources: [],
   history:        [],     // [{role, content}]
   streaming:      false,
 };
@@ -597,15 +796,15 @@ const API = {
   uploadFile(nbId, file) {
     const fd = new FormData();
     fd.append('file', file);
-    return this._json(`/api/notebooks/${nbId}/upload`, {method:'POST', body:fd});
+    // Returns raw Response so caller can read the SSE stream
+    return fetch(`/api/notebooks/${nbId}/upload`, {method:'POST', body:fd});
   },
 
-  // Returns raw Response for SSE
-  chatSSE(nbId, message, history) {
+  chatSSE(nbId, message, history, selectedSources) {
     return fetch('/api/chat', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({nb_id: nbId, message, history}),
+      body: JSON.stringify({nb_id: nbId, message, history, selected_sources: selectedSources}),
     });
   },
 };
@@ -627,6 +826,14 @@ const Toast = (() => {
 /* ── Render ───────────────────────────────────────────────── */
 const Render = {
   notebooks(nbs, activeId) {
+    // Update trigger label
+    const active = nbs.find(n => n.id === activeId);
+    document.getElementById('nb-trigger-name').textContent =
+      active ? active.name : '— select a notebook —';
+    document.getElementById('nb-trigger-count').textContent =
+      nbs.length ? `(${nbs.length})` : '';
+
+    // Build dropdown list
     const ul = document.getElementById('nb-list');
     ul.innerHTML = '';
     nbs.forEach(nb => {
@@ -654,7 +861,10 @@ const Render = {
       li.appendChild(dot);
       li.appendChild(name);
       li.appendChild(delBtn);
-      li.addEventListener('click', () => Actions.selectNotebook(nb.id, nb.name));
+      li.addEventListener('click', () => {
+        NbDropdown.close();
+        Actions.selectNotebook(nb.id, nb.name);
+      });
       ul.appendChild(li);
     });
   },
@@ -664,7 +874,7 @@ const Render = {
     const removeBtn = document.getElementById('remove-btn');
     ul.innerHTML = '';
 
-    if (!sources.length) {
+    if (!sources.length && !State.activeNbCat) {
       const li = document.createElement('li');
       li.className = 'no-sources';
       li.textContent = '(no sources — upload a PDF)';
@@ -672,30 +882,75 @@ const Render = {
       removeBtn.disabled = true;
       return;
     }
+    
+    // Add Core Knowledge if category exists
+    if (State.activeNbCat) {
+       const li = document.createElement('li');
+       const isSelected = selected.includes('core');
+       if (isSelected) li.classList.add('selected');
+
+       const cb = document.createElement('input');
+       cb.type = 'checkbox';
+       cb.className = 'src-checkbox';
+       cb.checked = isSelected;
+
+       const name = document.createElement('span');
+       name.className = 'src-name';
+       name.textContent = `Core: ${State.activeNbCat.replace(/_/g, ' ')}`;
+       name.title = 'Core Knowledge Base';
+
+       li.appendChild(cb);
+       li.appendChild(name);
+       
+       li.addEventListener('click', (e) => {
+         if (e.target !== cb) cb.checked = !cb.checked;
+         if (cb.checked) {
+             if (!State.selectedSources.includes('core')) State.selectedSources.push('core');
+         } else {
+             State.selectedSources = State.selectedSources.filter(s => s !== 'core');
+         }
+         Render.sources(sources, State.selectedSources);
+       });
+       ul.appendChild(li);
+    }
 
     sources.forEach(s => {
       const li = document.createElement('li');
-      if (s === selected) li.classList.add('selected');
+      const isSelected = selected.includes(s);
+      if (isSelected) li.classList.add('selected');
 
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.className = 'src-checkbox';
+      cb.checked = isSelected;
+
+      // Original icon logic...
       const icon = document.createElement('span');
       icon.className = 'src-icon';
-      icon.textContent = '📄';
+      icon.textContent = '📄 ';
 
       const name = document.createElement('span');
       name.className = 'src-name';
       name.textContent = s;
       name.title = s;
 
+      li.appendChild(cb);
       li.appendChild(icon);
       li.appendChild(name);
-      li.addEventListener('click', () => {
-        State.selectedSource = (State.selectedSource === s) ? null : s;
-        Render.sources(sources, State.selectedSource);
+      
+      li.addEventListener('click', (e) => {
+        if (e.target !== cb) cb.checked = !cb.checked;
+        if (cb.checked) {
+            if (!State.selectedSources.includes(s)) State.selectedSources.push(s);
+        } else {
+            State.selectedSources = State.selectedSources.filter(x => x !== s);
+        }
+        Render.sources(sources, State.selectedSources);
       });
       ul.appendChild(li);
     });
 
-    removeBtn.disabled = !selected;
+    removeBtn.disabled = State.selectedSources.filter(s => s !== 'core').length === 0;
   },
 
   stats(stats) {
@@ -765,6 +1020,122 @@ const Render = {
   },
 };
 
+/* ── Markdown renderer ────────────────────────────────────── */
+function escHtmlMd(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function inlineMd(s) {
+  return s
+    .replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
+    .replace(/\*\*(.+?)\*\*/g,     '<strong>$1</strong>')
+    .replace(/\*([^*\n]+?)\*/g,    '<em>$1</em>')
+    .replace(/~~(.+?)~~/g,         '<del>$1</del>')
+    .replace(/`([^`]+)`/g,         '<code>$1</code>');
+}
+
+// Split a markdown table row "| a | b | c |" → ["a","b","c"]
+function _tableRow(line) {
+  return line.split('|').slice(1, -1).map(c => c.trim());
+}
+
+function renderMarkdown(raw) {
+  const lines = raw.split('\n');
+  const out   = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line  = lines[i];
+    const trimmed = line.trim();
+
+    // ── Fenced code block ──────────────────────────────────
+    if (line.startsWith('```')) {
+      i++;
+      const code = [];
+      while (i < lines.length && !lines[i].startsWith('```')) {
+        code.push(escHtmlMd(lines[i]));
+        i++;
+      }
+      out.push(`<pre><code>${code.join('\n')}</code></pre>`);
+      i++; continue;
+    }
+
+    // ── Headings ───────────────────────────────────────────
+    if (/^#### /.test(line)) { out.push(`<h4>${inlineMd(escHtmlMd(line.slice(5)))}</h4>`); i++; continue; }
+    if (/^### /.test(line))  { out.push(`<h3>${inlineMd(escHtmlMd(line.slice(4)))}</h3>`); i++; continue; }
+    if (/^## /.test(line))   { out.push(`<h2>${inlineMd(escHtmlMd(line.slice(3)))}</h2>`); i++; continue; }
+    if (/^# /.test(line))    { out.push(`<h1>${inlineMd(escHtmlMd(line.slice(2)))}</h1>`); i++; continue; }
+
+    // ── Horizontal rule ────────────────────────────────────
+    if (/^-{3,}$/.test(trimmed) || /^\*{3,}$/.test(trimmed)) {
+      out.push('<hr>'); i++; continue;
+    }
+
+    // ── Table ─────────────────────────────────────────────
+    // Detect: current line has | ... | and next line is a separator |---|---|
+    if (/^\|.+\|/.test(line) &&
+        i + 1 < lines.length &&
+        /^\|[\s|:=-]+\|/.test(lines[i + 1])) {
+
+      const headers = _tableRow(line);
+      i += 2; // skip header row + separator row
+
+      const rows = [];
+      while (i < lines.length && /^\|/.test(lines[i]) && lines[i].trim() !== '') {
+        rows.push(_tableRow(lines[i]));
+        i++;
+      }
+
+      const thead = '<thead><tr>' +
+        headers.map(h => `<th>${inlineMd(escHtmlMd(h))}</th>`).join('') +
+        '</tr></thead>';
+
+      const tbody = '<tbody>' +
+        rows.map(r =>
+          '<tr>' + r.map(c => `<td>${inlineMd(escHtmlMd(c))}</td>`).join('') + '</tr>'
+        ).join('') +
+        '</tbody>';
+
+      out.push(`<div class="md-table-wrap"><table>${thead}${tbody}</table></div>`);
+      continue;
+    }
+
+    // ── Bullet list ────────────────────────────────────────
+    if (/^[ \t]*[-*+] /.test(line)) {
+      out.push('<ul>');
+      while (i < lines.length && /^[ \t]*[-*+] /.test(lines[i])) {
+        // Skip blank lines between items
+        if (lines[i].trim() === '') { i++; continue; }
+        const content = lines[i].replace(/^[ \t]*[-*+] /, '');
+        out.push(`<li>${inlineMd(escHtmlMd(content))}</li>`);
+        i++;
+      }
+      out.push('</ul>'); continue;
+    }
+
+    // ── Numbered list ──────────────────────────────────────
+    if (/^\d+[.)]\s/.test(line)) {
+      out.push('<ol>');
+      while (i < lines.length && /^\d+[.)]\s/.test(lines[i])) {
+        if (lines[i].trim() === '') { i++; continue; }
+        const content = lines[i].replace(/^\d+[.)]\s+/, '');
+        out.push(`<li>${inlineMd(escHtmlMd(content))}</li>`);
+        i++;
+      }
+      out.push('</ol>'); continue;
+    }
+
+    // ── Blank line ─────────────────────────────────────────
+    if (trimmed === '') { out.push('<br>'); i++; continue; }
+
+    // ── Regular paragraph ──────────────────────────────────
+    out.push(`<p>${inlineMd(escHtmlMd(line))}</p>`);
+    i++;
+  }
+
+  return out.join('');
+}
+
 /* ── Streaming chat ───────────────────────────────────────── */
 async function streamChat(nbId, message) {
   State.streaming = true;
@@ -779,9 +1150,25 @@ async function streamChat(nbId, message) {
 
   const area = document.getElementById('messages-area');
   let fullText = '';
+  let reasoningBlock = null;
+  let reasoningContent = null;
+
+  // Smart auto-scroll: only scroll if user is already near the bottom.
+  // Throttled via rAF so it never blocks keyboard events.
+  let _rafPending = false;
+  function scheduleScroll() {
+    if (_rafPending) return;
+    _rafPending = true;
+    requestAnimationFrame(() => {
+      _rafPending = false;
+      if (area.scrollHeight - area.scrollTop - area.clientHeight < 120) {
+        area.scrollTop = area.scrollHeight;
+      }
+    });
+  }
 
   try {
-    const resp = await API.chatSSE(nbId, message, State.history);
+    const resp = await API.chatSSE(nbId, message, State.history, State.selectedSources);
     if (!resp.ok || !resp.body) {
       cursor.remove();
       bubble.textContent = `⚠ HTTP ${resp.status}: ${resp.statusText}`;
@@ -810,19 +1197,47 @@ async function streamChat(nbId, message) {
         try { evt = JSON.parse(raw); } catch { continue; }
 
         if (evt.type === 'thinking') {
-          if (!fullText) {
-            bubble.innerHTML = '<span class="think-spinner">🧠 Reasoning…</span>';
-            bubble.appendChild(cursor);
+          // Create collapsible reasoning panel above the answer bubble
+          reasoningBlock = document.createElement('details');
+          reasoningBlock.className = 'reasoning-block';
+          reasoningBlock.open = true;
+          const summary = document.createElement('summary');
+          summary.textContent = 'Reasoning…';
+          reasoningContent = document.createElement('pre');
+          reasoningContent.className = 'reasoning-content';
+          reasoningBlock.appendChild(summary);
+          reasoningBlock.appendChild(reasoningContent);
+          bubble.closest('.msg').insertBefore(reasoningBlock, bubble);
+
+        } else if (evt.type === 'thinking_token') {
+          if (reasoningContent) {
+            reasoningContent.textContent += evt.content;
+            scheduleScroll();
           }
 
         } else if (evt.type === 'token') {
+          // First answer token — collapse the reasoning panel
+          if (reasoningBlock && reasoningBlock.open) {
+            reasoningBlock.open = false;
+            reasoningBlock.querySelector('summary').textContent = 'View reasoning';
+          }
           fullText += evt.content;
           bubble.textContent = fullText;
           bubble.appendChild(cursor);
-          area.scrollTop = area.scrollHeight;
+          scheduleScroll();
 
         } else if (evt.type === 'done') {
           cursor.remove();
+          if (fullText) {
+            try {
+              bubble.innerHTML = renderMarkdown(fullText);
+              bubble.classList.add('rendered');
+            } catch(mdErr) {
+              bubble.textContent = fullText; // fallback
+              console.error('renderMarkdown failed:', mdErr);
+            }
+          }
+          area.scrollTop = area.scrollHeight;
           Render.updateCitations(evt.citations || []);
           State.history.push({role: 'user',      content: message});
           State.history.push({role: 'assistant',  content: fullText});
@@ -881,7 +1296,7 @@ const Actions = {
     State.activeNbId    = nbId;
     State.activeNbName  = nbName;
     State.history       = [];
-    State.selectedSource = null;
+    State.selectedSources = [];
 
     Render.notebookTitle(nbName);
     Render.clearMessages();
@@ -889,12 +1304,20 @@ const Actions = {
     try {
       const nbs = await API.getNotebooks();
       Render.notebooks(nbs, nbId);
+      
+      const nb = nbs.find(n => n.id === nbId);
+      State.activeNbCat = nb ? nb.equipment_category : null;
 
       const [srcData, stats] = await Promise.all([
         API.getSources(nbId),
         API.getStats(nbId),
       ]);
-      Render.sources(srcData.sources, null);
+      
+      // Select all sources by default
+      State.selectedSources = [...srcData.sources];
+      if (State.activeNbCat) State.selectedSources.push('core');
+      
+      Render.sources(srcData.sources, State.selectedSources);
       Render.stats(stats);
     } catch (e) {
       Toast.show(`Failed to load notebook: ${e.message}`, 'error');
@@ -910,14 +1333,53 @@ const Actions = {
     const progress = document.getElementById('upload-progress');
     label.classList.add('busy');
 
+    const MAX_MB    = 200;
+    const MAX_BYTES = MAX_MB * 1024 * 1024;
+    const ALLOWED   = new Set(['.pdf', '.docx', '.doc']);
+
     for (const file of files) {
+      // Client-side type guard
+      const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
+      if (!ALLOWED.has(ext)) {
+        Toast.show(`⚠ ${file.name}: unsupported type. Only PDF and DOCX are accepted.`, 'error');
+        continue;
+      }
+      // Client-side size guard — instant feedback before upload
+      if (file.size > MAX_BYTES) {
+        const mb = (file.size / (1024 * 1024)).toFixed(0);
+        Toast.show(`⚠ ${file.name} is ${mb} MB — exceeds the ${MAX_MB} MB limit. Please split the file.`, 'error');
+        continue;
+      }
+
       progress.textContent = `⏳ ${file.name} …`;
       try {
-        const res = await API.uploadFile(State.activeNbId, file);
-        if (res.cached) {
-          Toast.show(`✓ ${res.source} — already indexed (skipped re-embedding)`, 'success');
-        } else {
-          Toast.show(`✓ ${res.source}  →  ${res.chunks} chunks indexed`, 'success');
+        const resp = await API.uploadFile(State.activeNbId, file);
+        const reader = resp.body.getReader();
+        const dec = new TextDecoder();
+        let buf = '';
+        let streamDone = false;
+        while (!streamDone) {
+          const {value, done} = await reader.read();
+          streamDone = done;
+          if (value) buf += dec.decode(value, {stream: true});
+          const lines = buf.split('\n');
+          buf = lines.pop(); // hold incomplete last line
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            let evt;
+            try { evt = JSON.parse(line.slice(6)); } catch { continue; }
+            if (evt.type === 'progress') {
+              progress.textContent = `⏳ ${evt.msg}`;
+            } else if (evt.type === 'done') {
+              if (evt.cached) {
+                Toast.show(`✓ ${evt.source} — already indexed (skipped re-embedding)`, 'success');
+              } else {
+                Toast.show(`✓ ${evt.source}  →  ${evt.chunks} chunks — Ready for chat`, 'success');
+              }
+            } else if (evt.type === 'error') {
+              Toast.show(`⚠ ${file.name}: ${evt.content}`, 'error');
+            }
+          }
         }
       } catch (e) {
         Toast.show(`⚠ ${file.name}: ${e.message}`, 'error');
@@ -932,24 +1394,36 @@ const Actions = {
         API.getSources(State.activeNbId),
         API.getStats(State.activeNbId),
       ]);
-      State.selectedSource = null;
-      Render.sources(srcData.sources, null);
+      
+      // Auto-select newly uploaded files (they are in srcData.sources but weren't before)
+      for (const s of srcData.sources) {
+          if (!State.selectedSources.includes(s)) State.selectedSources.push(s);
+      }
+      
+      Render.sources(srcData.sources, State.selectedSources);
       Render.stats(stats);
     } catch(e) { /* non-fatal */ }
   },
 
   async removeSource() {
-    if (!State.activeNbId || !State.selectedSource) return;
-    const name = State.selectedSource;
-    if (!confirm(`Remove "${name}" from this notebook?\n\nThis cannot be undone.`)) return;
+    const toRemove = State.selectedSources.filter(s => s !== 'core');
+    if (!State.activeNbId || toRemove.length === 0) return;
+    
+    if (!confirm(`Remove ${toRemove.length} source(s) from this notebook?\n\nThis cannot be undone.`)) return;
     try {
-      await API.removeSource(State.activeNbId, name);
-      State.selectedSource = null;
+      for (const name of toRemove) {
+          await API.removeSource(State.activeNbId, name);
+      }
+      
       const [srcData, stats] = await Promise.all([
         API.getSources(State.activeNbId),
         API.getStats(State.activeNbId),
       ]);
-      Render.sources(srcData.sources, null);
+      
+      State.selectedSources = [...srcData.sources];
+      if (State.activeNbCat) State.selectedSources.push('core');
+      
+      Render.sources(srcData.sources, State.selectedSources);
       Render.stats(stats);
       Toast.show(`Removed "${name}"`, 'success');
     } catch (e) { Toast.show(e.message, 'error'); }
@@ -1003,6 +1477,15 @@ function autoResizeTextarea(ta) {
 /* ── Event wiring ─────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', () => {
 
+  // Notebook dropdown
+  document.getElementById('nb-trigger').addEventListener('click', () => NbDropdown.toggle());
+  document.addEventListener('click', e => {
+    if (!NbDropdown._open) return;
+    const trigger  = document.getElementById('nb-trigger');
+    const dropdown = document.getElementById('nb-dropdown');
+    if (!trigger.contains(e.target) && !dropdown.contains(e.target)) NbDropdown.close();
+  });
+
   document.getElementById('new-nb-btn').addEventListener('click',
     () => Actions.createNotebook());
   document.getElementById('new-nb-input').addEventListener('keydown', e => {
@@ -1015,16 +1498,25 @@ document.addEventListener('DOMContentLoaded', () => {
       e.target.value = '';
     }
   });
-  document.getElementById('upload-label').addEventListener('click', () => {
+  document.getElementById('upload-label').addEventListener('click', e => {
     if (!State.activeNbId) {
+      e.preventDefault(); // block the native for= trigger
       Toast.show('Select a notebook first', 'error');
-      return;
     }
-    document.getElementById('upload-input').click();
+    // else: label's for="upload-input" opens the picker natively — no manual .click() needed
   });
 
   document.getElementById('remove-btn').addEventListener('click',
     () => Actions.removeSource());
+
+  document.getElementById('new-chat-btn').addEventListener('click', () => {
+    if (State.streaming) return; // don't clear mid-stream
+    State.history = [];
+    const area = document.getElementById('messages-area');
+    area.innerHTML = '<div id="empty-state"><span class="em-icon">📖</span>Select a notebook on the left, upload a PDF,<br>then ask any question about your manuals.</div>';
+    document.getElementById('citations-panel').classList.add('hidden');
+    document.getElementById('citations-list').innerHTML = '';
+  });
 
   document.getElementById('send-btn').addEventListener('click',
     () => Actions.sendMessage());
@@ -1045,7 +1537,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   document.getElementById('sidebar').addEventListener('drop', e => {
     e.preventDefault();
-    const files = Array.from(e.dataTransfer.files).filter(f => f.name.endsWith('.pdf'));
+    const files = Array.from(e.dataTransfer.files).filter(f => /\.(pdf|docx|doc)$/i.test(f.name));
     if (files.length) Actions.uploadFiles(files);
   });
 

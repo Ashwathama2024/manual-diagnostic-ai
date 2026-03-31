@@ -16,6 +16,7 @@ indexing:
   max_chunk_chars: 1800
   overlap_chars: 200
   batch_size: 16
+  pdf_pages_per_batch: 15
 
 retrieval:
   mode: hybrid

@@ -74,26 +74,104 @@ def retrieve_vector(
     top_k: int,
     embedding_model: str,
     notebook_id: str = "",
+    selected_sources: list[str] | None = None,
+    core_category: str = "",
 ) -> list[dict[str, Any]]:
     import lancedb
     from langchain_ollama import OllamaEmbeddings
 
     db = lancedb.connect(db_dir)
-    table = db.open_table(table_name)
-
     embedder = OllamaEmbeddings(model=embedding_model)
     q_vec = embedder.embed_query(question)
+    
+    selected_sources = selected_sources or []
+    nb_sources = [s for s in selected_sources if s != "core"]
+    results = []
+    
+    existing_tables = db.list_tables().tables
 
-    query = table.search(q_vec)
-    has_nb_col = "notebook_id" in table.schema.names
-    if notebook_id and has_nb_col:
-        safe_nb = notebook_id.replace("'", "''")
-        query = query.where(f"notebook_id = '{safe_nb}'")
-    results = query.limit(top_k).to_list()
+    # 1. Query Notebooks Table
+    if table_name in existing_tables and nb_sources:
+        table = db.open_table(table_name)
+        has_nb_col = "notebook_id" in table.schema.names
+        has_src_col = "source" in table.schema.names
+        
+        query = table.search(q_vec).limit(top_k)
+        
+        conditions = []
+        if notebook_id and has_nb_col:
+            safe_nb = notebook_id.replace("'", "''")
+            conditions.append(f"notebook_id = '{safe_nb}'")
+            
+        if nb_sources and has_src_col:
+            in_clause = ", ".join(f"'{s.replace(chr(39), chr(39)+chr(39))}'" for s in nb_sources)
+            conditions.append(f"source IN ({in_clause})")
+            
+        if conditions:
+            query = query.where(" AND ".join(conditions))
+            
+        nb_res = query.to_list()
+        for row in nb_res:
+            row["provenance"] = "Manual"
+        results.extend(nb_res)
+
+    # 2. Query Core Knowledge Table
+    if "core_knowledge" in existing_tables and "core" in selected_sources:
+        core_table = db.open_table("core_knowledge")
+        has_cat_col = "equipment_category" in core_table.schema.names
+
+        query = core_table.search(q_vec).limit(top_k)
+        if core_category and has_cat_col:
+            safe_cat = core_category.replace("'", "''")
+            query = query.where(f"equipment_category = '{safe_cat}'")
+            
+        core_res = query.to_list()
+        for row in core_res:
+            row["provenance"] = "Core Knowledge"
+        results.extend(core_res)
+
+    # Assign scores from LanceDB distance
     for row in results:
         if "_distance" in row and "score" not in row:
             row["score"] = round(float(row["_distance"]), 6)
-    return results
+
+    # Sort within each provenance group so best chunks from each source are first,
+    # then interleave: take top_k from manual and top_k from core independently so
+    # neither source can crowd out the other entirely.
+    manual_res = sorted([r for r in results if r.get("provenance") != "Core Knowledge"],
+                        key=lambda x: x.get("score", float("inf")))
+    core_res   = sorted([r for r in results if r.get("provenance") == "Core Knowledge"],
+                        key=lambda x: x.get("score", float("inf")))
+
+    combined = manual_res[:top_k] + core_res[:top_k]
+    combined.sort(key=lambda x: x.get("score", float("inf")))
+    return combined
+
+
+def _fuzzy_match(query_term: str, counts: Counter) -> float:
+    """Exact match first; fall back to prefix/substring for typo tolerance.
+
+    Returns an effective count (may be fractional for fuzzy hits).
+    Only attempts fuzzy matching for terms >= 4 chars to avoid false positives.
+    """
+    exact = counts[query_term]
+    if exact:
+        return float(exact)
+    if len(query_term) < 4:
+        return 0.0
+    best = 0.0
+    for tok, freq in counts.items():
+        if len(tok) < 4:
+            continue
+        # Prefix match: one is a prefix of the other within 3 chars length diff
+        shorter, longer = (query_term, tok) if len(query_term) <= len(tok) else (tok, query_term)
+        if longer.startswith(shorter) and (len(longer) - len(shorter)) <= 3:
+            best = max(best, 0.6 * freq)
+            continue
+        # Substring match: query_term appears inside chunk token or vice-versa
+        if shorter in longer:
+            best = max(best, 0.4 * freq)
+    return best
 
 
 def lexical_score(question_terms: list[str], chunk: dict[str, Any]) -> float:
@@ -104,10 +182,13 @@ def lexical_score(question_terms: list[str], chunk: dict[str, Any]) -> float:
         return 0.0
 
     counts = Counter(tokens)
-    unique_matches = sum(1 for term in set(question_terms) if counts[term] > 0)
-    weighted_matches = sum(math.log1p(counts[term]) for term in question_terms if counts[term] > 0)
-    section_boost = sum(1 for term in set(question_terms) if term in tokenize(section))
-    density = unique_matches / max(len(set(question_terms)), 1)
+    section_tokens = set(tokenize(section))
+
+    weighted_matches = sum(math.log1p(_fuzzy_match(t, counts)) for t in question_terms
+                           if _fuzzy_match(t, counts) > 0)
+    unique_matches   = sum(1 for t in set(question_terms) if _fuzzy_match(t, counts) > 0)
+    section_boost    = sum(1 for t in set(question_terms) if _fuzzy_match(t, Counter(section_tokens)) > 0)
+    density          = unique_matches / max(len(set(question_terms)), 1)
     return weighted_matches + (section_boost * 1.5) + density
 
 
@@ -116,14 +197,47 @@ def retrieve_vectorless(
     chunks_path: Path,
     top_k: int,
     notebook_id: str = "",
+    selected_sources: list[str] | None = None,
+    core_category: str = "",
 ) -> list[dict[str, Any]]:
-    chunks = load_chunks(chunks_path)
-    if notebook_id:
-        chunks = [c for c in chunks if c.get("notebook_id", "") == notebook_id]
+    selected_sources = selected_sources or []
+    nb_sources = [s for s in selected_sources if s != "core"]
+    
+    all_chunks = []
+    
+    # 1. Load Notebook Chunks
+    if chunks_path.exists() and nb_sources:
+        chunks = load_chunks(chunks_path)
+        if notebook_id:
+            chunks = [c for c in chunks if c.get("notebook_id", "") == notebook_id]
+        chunks = [c for c in chunks if c.get("source", "") in nb_sources]
+        for c in chunks:
+            c["provenance"] = "Manual"
+        all_chunks.extend(chunks)
+        
+    # 2. Load Core Knowledge Chunks (from LanceDB — core has no JSONL)
+    if "core" in selected_sources:
+        try:
+            import lancedb as _ldb
+            _db = _ldb.connect(str(resolve_path("data/lancedb")))
+            if "core_knowledge" in _db.list_tables().tables:
+                _ct = _db.open_table("core_knowledge")
+                _has_cat = "equipment_category" in _ct.schema.names
+                if core_category and _has_cat:
+                    safe_cat = core_category.replace("'", "''")
+                    _rows = _ct.search().where(f"equipment_category = '{safe_cat}'").limit(top_k * 4).to_list()
+                else:
+                    _rows = _ct.search().limit(top_k * 4).to_list()
+                for row in _rows:
+                    row["provenance"] = "Core Knowledge"
+                all_chunks.extend(_rows)
+        except Exception:
+            pass
+
     question_terms = tokenize(question)
 
     scored: list[dict[str, Any]] = []
-    for chunk in chunks:
+    for chunk in all_chunks:
         score = lexical_score(question_terms, chunk)
         if score <= 0:
             continue
@@ -157,9 +271,11 @@ def retrieve_hybrid(
     embedding_model: str,
     chunks_path: Path,
     notebook_id: str = "",
+    selected_sources: list[str] | None = None,
+    core_category: str = "",
 ) -> list[dict[str, Any]]:
-    lexical = retrieve_vectorless(question, chunks_path, top_k=top_k * 2, notebook_id=notebook_id)
-    vector = retrieve_vector(question, db_dir, table_name, top_k=top_k * 2, embedding_model=embedding_model, notebook_id=notebook_id)
+    lexical = retrieve_vectorless(question, chunks_path, top_k * 2, notebook_id, selected_sources, core_category)
+    vector = retrieve_vector(question, db_dir, table_name, top_k * 2, embedding_model, notebook_id, selected_sources, core_category)
     merged = lexical + vector
     return dedupe_by_id(merged, top_k)
 

@@ -21,7 +21,7 @@ import os
 import subprocess
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from common import ensure_command, load_config, require_path, resolve_path
 
@@ -254,6 +254,50 @@ def _ingest_via_cli(pdf_path: Path, processed_dir: Path, docling_exe: str) -> Pa
 
 
 # ---------------------------------------------------------------------------
+# PDF page-batch splitter  (RAM-safe large-file ingestion)
+# ---------------------------------------------------------------------------
+
+def split_pdf_pages(pdf_path: Path, pages_per_batch: int) -> tuple[list[Path], int]:
+    """Split a large PDF into smaller temp PDFs for RAM-safe Docling processing.
+
+    Returns (batch_paths, total_pages).
+    If total pages <= pages_per_batch, returns ([pdf_path], total_pages) — no temp files.
+    Temp batch files are written alongside pdf_path and named <stem>__batch_<NNNN>.pdf.
+    The caller is responsible for deleting them after use.
+    """
+    try:
+        from pypdf import PdfReader, PdfWriter
+    except ImportError:
+        log.warning("[ingest] pypdf not installed — processing whole PDF (may be RAM-heavy)")
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(str(pdf_path))
+            return [pdf_path], len(reader.pages)
+        except Exception:
+            return [pdf_path], 0
+
+    reader = PdfReader(str(pdf_path))
+    total = len(reader.pages)
+
+    if total <= pages_per_batch:
+        return [pdf_path], total
+
+    log.info("[ingest] PDF has %d pages — splitting into batches of %d", total, pages_per_batch)
+    batches: list[Path] = []
+    for start in range(0, total, pages_per_batch):
+        writer = PdfWriter()
+        end = min(start + pages_per_batch, total)
+        for p in range(start, end):
+            writer.add_page(reader.pages[p])
+        out = pdf_path.parent / f"{pdf_path.stem}__batch_{start:04d}.pdf"
+        with open(out, "wb") as fh:
+            writer.write(fh)
+        batches.append(out)
+
+    return batches, total
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -262,6 +306,7 @@ def ingest_pdf(
     processed_dir: Path,
     docling_exe: str = "docling",
     cfg: dict | None = None,
+    progress_cb: Callable[[str], None] | None = None,
 ) -> Path:
     """
     Convert a PDF to enhanced Markdown and write to processed_dir.
@@ -269,9 +314,16 @@ def ingest_pdf(
     Tries Docling Python API (with OCR + vision captioning) first.
     Falls back to Docling CLI on any import or conversion error.
 
+    Large PDFs are automatically split into page batches (pdf_pages_per_batch from cfg)
+    so that Docling/RapidOCR never tries to allocate RAM for the full document at once.
+    Batch temp files are cleaned up after merging.
+
+    progress_cb — optional callable(msg: str) for live status updates (used by SSE upload).
+
     Returns the path to the output .md file.
     Called by server.py on upload and by main() for batch ingestion.
     """
+    _cb = progress_cb or (lambda _: None)
     processed_dir.mkdir(parents=True, exist_ok=True)
     out_md = processed_dir / f"{pdf_path.stem}.md"
 
@@ -280,26 +332,137 @@ def ingest_pdf(
         cfg = _find_config()
 
     vision_enabled, vision_model, vision_timeout, max_images = _vision_settings(cfg)
+    pages_per_batch = int(cfg.get("indexing", {}).get("pdf_pages_per_batch", 15))
 
-    # ── Attempt 1: Python API ────────────────────────────────────────────
+    # ── Attempt 1: Python API (with page-batch splitting) ────────────────
     try:
-        md_content = _build_markdown_python_api(
-            pdf_path, vision_enabled, vision_model, vision_timeout, max_images
-        )
+        batches, total_pages = split_pdf_pages(pdf_path, pages_per_batch)
+        is_batched = len(batches) > 1
+
+        md_parts: list[str] = []
+        for idx, batch_path in enumerate(batches):
+            if is_batched:
+                start_pg = idx * pages_per_batch + 1
+                end_pg = min(start_pg + pages_per_batch - 1, total_pages)
+                msg = f"Converting pages {start_pg}–{end_pg} of {total_pages}…"
+                _cb(msg)
+                log.info("[ingest] %s", msg)
+            else:
+                _cb(f"Converting {pdf_path.name}…")
+
+            part = _build_markdown_python_api(
+                batch_path, vision_enabled, vision_model, vision_timeout, max_images
+            )
+            md_parts.append(part)
+
+            # Clean up temp batch PDF (but NOT the original)
+            if is_batched and batch_path != pdf_path:
+                try:
+                    batch_path.unlink()
+                except Exception:
+                    pass
+
+        md_content = "\n\n---\n\n".join(p for p in md_parts if p.strip())
         if not md_content.strip():
             raise RuntimeError("Python API produced empty markdown")
+
         out_md.write_text(md_content, encoding="utf-8")
-        log.info("[ingest] ✓ %s → %d chars (Python API)", pdf_path.name, len(md_content))
+        log.info("[ingest] ✓ %s → %d chars (Python API, %d batch(es))",
+                 pdf_path.name, len(md_content), len(batches))
         return out_md
+
     except ImportError:
         log.info("[ingest] Docling Python package not available; using CLI")
+        # Clean up any orphaned batch files on ImportError
+        try:
+            for f in pdf_path.parent.glob(f"{pdf_path.stem}__batch_*.pdf"):
+                f.unlink()
+        except Exception:
+            pass
     except Exception as exc:
         log.warning("[ingest] Python API failed (%s); falling back to CLI", exc)
+        try:
+            for f in pdf_path.parent.glob(f"{pdf_path.stem}__batch_*.pdf"):
+                f.unlink()
+        except Exception:
+            pass
 
     # ── Attempt 2: CLI fallback ──────────────────────────────────────────
+    _cb(f"Converting {pdf_path.name} via CLI…")
     result = _ingest_via_cli(pdf_path, processed_dir, docling_exe)
     log.info("[ingest] ✓ %s → CLI (no vision)", pdf_path.name)
     return result
+
+
+# ---------------------------------------------------------------------------
+# DOCX ingestion
+# ---------------------------------------------------------------------------
+
+def ingest_docx(
+    docx_path: Path,
+    processed_dir: Path,
+    cfg: dict | None = None,
+    progress_cb: Callable[[str], None] | None = None,
+) -> Path:
+    """
+    Convert a DOCX / DOC file to Markdown using the Docling Python API.
+    DOCX is already structured text so no OCR or page-batching is needed.
+    Falls back to the Docling CLI on ImportError or conversion failure.
+    """
+    _cb = progress_cb or (lambda _: None)
+    processed_dir.mkdir(parents=True, exist_ok=True)
+    out_md = processed_dir / f"{docx_path.stem}.md"
+
+    _cb(f"Converting {docx_path.name}…")
+    log.info("[ingest] Converting DOCX: %s", docx_path.name)
+
+    # Attempt 1: Docling Python API
+    try:
+        from docling.document_converter import DocumentConverter
+
+        converter = DocumentConverter()
+        result = converter.convert(str(docx_path))
+        md_content = result.document.export_to_markdown()
+
+        if not md_content.strip():
+            raise RuntimeError("Docling returned empty markdown for DOCX")
+
+        out_md.write_text(md_content, encoding="utf-8")
+        log.info("[ingest] ✓ %s → %d chars (DOCX Python API)", docx_path.name, len(md_content))
+        return out_md
+
+    except ImportError:
+        log.info("[ingest] Docling Python package not available; using CLI for DOCX")
+    except Exception as exc:
+        log.warning("[ingest] DOCX Python API failed (%s); falling back to CLI", exc)
+
+    # Attempt 2: CLI fallback
+    _cb(f"Converting {docx_path.name} via CLI…")
+    result = _ingest_via_cli(docx_path, processed_dir, "docling")
+    log.info("[ingest] ✓ %s → CLI (DOCX)", docx_path.name)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Universal entry point — dispatches by extension
+# ---------------------------------------------------------------------------
+
+def ingest_file(
+    file_path: Path,
+    processed_dir: Path,
+    docling_exe: str = "docling",
+    cfg: dict | None = None,
+    progress_cb: Callable[[str], None] | None = None,
+) -> Path:
+    """
+    Convert any supported document (PDF, DOCX, DOC) to Markdown.
+    Routes to ingest_pdf() for PDFs (with page-batching) or ingest_docx() for Word files.
+    """
+    ext = file_path.suffix.lower()
+    if ext in {".docx", ".doc"}:
+        return ingest_docx(file_path, processed_dir, cfg, progress_cb)
+    else:
+        return ingest_pdf(file_path, processed_dir, docling_exe, cfg, progress_cb)
 
 
 # ---------------------------------------------------------------------------

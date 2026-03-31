@@ -31,6 +31,20 @@ from common import load_config, resolve_path
 from ingest import ingest_pdf
 from index import index_markdown, read_markdown, split_markdown
 
+CORE_CATEGORIES = [
+    "1_propulsion_main_machinery",
+    "2_fuel_oil_purification",
+    "3_pumps_piping_fluid",
+    "4_electrical_power_distribution",
+    "5_boiler_steam",
+    "6_compressed_air_gas",
+    "7_cooling_fresh_water_refrigeration",
+    "8_waste_pollution_control",
+    "9_deck_machinery_cargo_handling",
+    "10_bridge_navigation_equipment",
+    "11_firefighting_safety_lifesaving"
+]
+
 # ---------------------------------------------------------------------------
 # Dark theme CSS — ManualIQ dashboard
 # ---------------------------------------------------------------------------
@@ -240,20 +254,32 @@ def strip_thinking(raw: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Anti-hallucination prompt
+# Grounded-but-reasoning prompt
 # ---------------------------------------------------------------------------
 _SYSTEM_PROMPT = """\
-You are a strictly grounded technical assistant for industrial manuals.
+You are an expert technical assistant for marine and industrial engineering, \
+grounded in the provided document chunks.
 
-ABSOLUTE RULES:
-1. Every factual claim MUST cite a specific [Chunk N] inline.
-2. If the answer is not in the chunks, respond ONLY with:
-   "I cannot find this in the loaded documents. No answer provided."
-3. Partially answerable questions: answer only the parts supported by chunks; \
-mark the rest with "(not found in documents)".
-4. Quote numbers, part codes, torque values, and procedures verbatim from chunks.
-5. Do NOT infer, extrapolate, or synthesize beyond what is explicitly stated.
-6. Do NOT use training-data knowledge — only the context chunks below.\
+FACTUAL GROUNDING — never fabricate these:
+- Specific values (pressures, temperatures, clearances, torques, alarm setpoints, part codes) \
+MUST be quoted verbatim from a cited [Chunk N]. Never invent numbers.
+- Step-by-step procedures and safety interlocks must come from the chunks.
+- If a specification is not in any chunk, say so clearly: "(not found in loaded documents)".
+
+USE YOUR REASONING AND ENGINEERING EXPERTISE TO:
+- Understand the user's intent even with typos, abbreviations, or informal phrasing. \
+"crankshft" → crankshaft, "FO sys" → fuel oil system, "ME" → main engine, etc.
+- Reason across multiple chunks to build a coherent, complete answer — cite all relevant chunks.
+- Explain WHY something works the way the chunks describe, drawing on general engineering \
+principles. Clearly label such context as general knowledge vs. document fact.
+- If chunks are adjacent in topic but don't directly state the answer, reason from them \
+transparently: "Based on [Chunk N] which describes X, it follows that…"
+- When a partial answer exists, give it fully and flag only the missing parts.
+
+CITATIONS:
+- Inline [Chunk N] for every specific fact, value, or procedure step.
+- For troubleshooting: brief diagnosis hypothesis → numbered procedure with citations.
+- Never refuse when relevant information exists in the chunks — reason harder first.\
 """
 
 
@@ -271,7 +297,7 @@ def build_prompt(
         score = chunk.get("score")
         score_line = f"Score: {score}\n" if score is not None else ""
         chunk_blocks.append(
-            f"[Chunk {i}]\nSource: {chunk.get('source','')}\n"
+            f"[{chunk.get('provenance', 'Source')} — {chunk.get('source','')}]\n"
             f"Section: {section}\n{score_line}{text}"
         )
 
@@ -330,6 +356,7 @@ def find_notebook_by_id(notebooks: list[dict[str, Any]], nb_id: str) -> dict[str
 
 def create_notebook(
     name: str,
+    equipment_category: str,
     notebooks: list[dict[str, Any]],
     registry_path: Path,
     raw_dir: Path,
@@ -343,7 +370,7 @@ def create_notebook(
         return None
 
     nb_id = "nb_" + secrets.token_hex(6)
-    nb = {"id": nb_id, "name": name, "created": str(date.today())}
+    nb = {"id": nb_id, "name": name, "equipment_category": equipment_category, "created": str(date.today())}
     notebooks.append(nb)
     save_notebooks(notebooks, registry_path)
 
@@ -410,6 +437,8 @@ def retrieve(
     retrieval_mode: str,
     nb_id: str,
     nb_proc_dir: Path,
+    selected_sources: list[str] | None = None,
+    core_category: str = "",
 ) -> list[dict[str, Any]]:
     from query import retrieve_hybrid, retrieve_vector, retrieve_vectorless
 
@@ -420,11 +449,11 @@ def retrieve(
     top_k = int(cfg["retrieval"]["top_k"])
 
     if retrieval_mode == "vector":
-        return retrieve_vector(question, db_dir, table_name, top_k, embedding_model, notebook_id=nb_id)
+        return retrieve_vector(question, db_dir, table_name, top_k, embedding_model, nb_id, selected_sources, core_category)
     elif retrieval_mode == "vectorless":
-        return retrieve_vectorless(question, chunks_path, top_k, notebook_id=nb_id)
+        return retrieve_vectorless(question, chunks_path, top_k, nb_id, selected_sources, core_category)
     else:
-        return retrieve_hybrid(question, db_dir, table_name, top_k, embedding_model, chunks_path, notebook_id=nb_id)
+        return retrieve_hybrid(question, db_dir, table_name, top_k, embedding_model, chunks_path, nb_id, selected_sources, core_category)
 
 
 # ---------------------------------------------------------------------------
@@ -504,7 +533,7 @@ def build_app(cfg: dict[str, Any], show_thinking: bool) -> gr.Blocks:
 
     # ── Event handlers ─────────────────────────────────────────────────────
 
-    def on_create_notebook(nb_name: str):
+    def on_create_notebook(nb_name: str, equipment_category: str):
         notebooks = _load_nbs()
         nb_name = nb_name.strip()
         if not nb_name:
@@ -537,7 +566,7 @@ def build_app(cfg: dict[str, Any], show_thinking: bool) -> gr.Blocks:
                 "",
             )
 
-        nb = create_notebook(nb_name, notebooks, registry_path, raw_dir, processed_dir)
+        nb = create_notebook(nb_name, equipment_category, notebooks, registry_path, raw_dir, processed_dir)
         names = _nb_names()
         return (
             f"✓ Notebook '{nb_name}' created.",
@@ -784,7 +813,14 @@ def build_app(cfg: dict[str, Any], show_thinking: bool) -> gr.Blocks:
                         label="",
                         show_label=False,
                         lines=1,
-                        scale=3,
+                        scale=2,
+                    )
+                    nb_category_input = gr.Dropdown(
+                        choices=[""] + CORE_CATEGORIES,
+                        value="",
+                        label="Category",
+                        show_label=False,
+                        scale=1,
                     )
                     create_nb_btn = gr.Button("＋ Create", scale=1, elem_classes=["create-nb-btn"])
 
@@ -875,8 +911,8 @@ def build_app(cfg: dict[str, Any], show_thinking: bool) -> gr.Blocks:
             nb_chat_header, stats_display,
         ]
 
-        create_nb_btn.click(fn=on_create_notebook, inputs=[new_nb_input], outputs=_create_outputs)
-        new_nb_input.submit(fn=on_create_notebook, inputs=[new_nb_input], outputs=_create_outputs)
+        create_nb_btn.click(fn=on_create_notebook, inputs=[new_nb_input, nb_category_input], outputs=_create_outputs)
+        new_nb_input.submit(fn=on_create_notebook, inputs=[new_nb_input, nb_category_input], outputs=_create_outputs)
 
         nb_dropdown.change(
             fn=on_select_notebook,

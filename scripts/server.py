@@ -13,10 +13,15 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any, AsyncGenerator
+
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
 
 import uvicorn
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -27,7 +32,7 @@ from pydantic import BaseModel
 sys.path.insert(0, str(Path(__file__).parent))
 
 from common import load_config, resolve_path
-from ingest import ingest_pdf
+from ingest import ingest_file
 from index import index_markdown
 
 # ── Import all helpers from app.py (no duplication) ────────────────────────
@@ -68,6 +73,82 @@ _lock = threading.Lock()
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
+_WATCHED_EXTS = {".pdf", ".docx", ".md"}
+
+# Common marine/industrial abbreviation expansions used to enrich retrieval queries.
+# Keeps originals too so exact matches still work.
+_ABBREV_MAP: dict[str, str] = {
+    "me":   "main engine",
+    "ae":   "auxiliary engine",
+    "fo":   "fuel oil",
+    "lo":   "lube oil lubricating oil",
+    "fw":   "fresh water",
+    "sw":   "sea water",
+    "hw":   "high pressure",
+    "lp":   "low pressure",
+    "hp":   "high pressure",
+    "mcc":  "motor control center",
+    "rpm":  "revolutions per minute speed",
+    "tc":   "turbocharger",
+    "scav": "scavenge scavenging",
+    "exh":  "exhaust",
+    "cyl":  "cylinder",
+    "mcr":  "maximum continuous rating",
+    "ecr":  "engine control room",
+    "ig":   "inert gas",
+    "pb":   "push button",
+    "ocr":  "oil content recorder",
+}
+
+
+def _expand_query(query: str) -> str:
+    """Expand abbreviations and keep originals so both exact and expanded terms are embedded."""
+    words = query.split()
+    expanded: list[str] = []
+    for w in words:
+        expanded.append(w)
+        key = w.lower().strip(".,?!;:")
+        if key in _ABBREV_MAP:
+            expanded.append(_ABBREV_MAP[key])
+    return " ".join(expanded)
+
+
+class _CoreKnowledgeHandler(FileSystemEventHandler):
+    """Re-ingest core knowledge whenever a supported file is added or modified."""
+
+    def __init__(self) -> None:
+        self._pending = False
+        self._lock = threading.Lock()
+
+    def _debounced_ingest(self) -> None:
+        time.sleep(5)  # wait for large file writes to finish
+        with self._lock:
+            self._pending = False
+        print("[ManualIQ] Core knowledge change detected — re-ingesting...")
+        try:
+            preflight_path = Path(__file__).parent / "preflight_core.py"
+            subprocess.run([sys.executable, str(preflight_path)], check=True)
+            print("[ManualIQ] Core knowledge re-ingestion complete.")
+        except Exception as exc:
+            print(f"[ManualIQ] Core knowledge re-ingestion failed: {exc}")
+
+    def _trigger(self, path: str) -> None:
+        if Path(path).suffix.lower() not in _WATCHED_EXTS:
+            return
+        with self._lock:
+            if not self._pending:
+                self._pending = True
+                threading.Thread(target=self._debounced_ingest, daemon=True).start()
+
+    def on_created(self, event) -> None:  # type: ignore[override]
+        if not event.is_directory:
+            self._trigger(event.src_path)
+
+    def on_modified(self, event) -> None:  # type: ignore[override]
+        if not event.is_directory:
+            self._trigger(event.src_path)
+
+
 # ---------------------------------------------------------------------------
 # FastAPI app
 # ---------------------------------------------------------------------------
@@ -96,6 +177,27 @@ async def _startup() -> None:
     _ollama_client = Client(host="http://127.0.0.1:11434")
     print(f"[ManualIQ] server ready — model={_reasoning_model}  retrieval={_retrieval_mode}")
 
+    # Launch core knowledge ingestion automatically
+    def _run_core_preflight():
+        try:
+            print("[ManualIQ] Triggering background core knowledge sync...")
+            preflight_path = Path(__file__).parent / "preflight_core.py"
+            subprocess.run([sys.executable, str(preflight_path)], check=True)
+            print("[ManualIQ] Core knowledge background sync complete.")
+        except Exception as e:
+            print(f"[ManualIQ] Core knowledge sync failed: {e}")
+
+    threading.Thread(target=_run_core_preflight, daemon=True).start()
+
+    # Watch core_knowledge/ for new/modified docs and re-ingest automatically
+    core_dir = Path(__file__).resolve().parent.parent / "core_knowledge"
+    if core_dir.exists():
+        observer = Observer()
+        observer.schedule(_CoreKnowledgeHandler(), str(core_dir), recursive=True)
+        observer.daemon = True
+        observer.start()
+        print(f"[ManualIQ] Watching {core_dir} for new core knowledge files...")
+
 
 # ---------------------------------------------------------------------------
 # Serve the SPA
@@ -103,7 +205,7 @@ async def _startup() -> None:
 @app.get("/", response_class=HTMLResponse)
 async def serve_spa() -> HTMLResponse:
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-    return HTMLResponse(html)
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
 # ---------------------------------------------------------------------------
@@ -111,12 +213,14 @@ async def serve_spa() -> HTMLResponse:
 # ---------------------------------------------------------------------------
 class CreateNotebookRequest(BaseModel):
     name: str
+    equipment_category: str = ""
 
 
 class ChatRequest(BaseModel):
     message: str
     nb_id: str
     history: list[dict[str, str]] = []
+    selected_sources: list[str] = []
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +264,7 @@ async def create_nb(req: CreateNotebookRequest) -> dict[str, Any]:
     nbs = load_notebooks(_registry_path)
     if find_notebook_by_name(nbs, name):
         raise HTTPException(409, f"Notebook '{name}' already exists")
-    nb = create_notebook(name, nbs, _registry_path, _raw_dir, _processed_dir)
+    nb = create_notebook(name, req.equipment_category, nbs, _registry_path, _raw_dir, _processed_dir)
     if nb is None:
         raise HTTPException(500, "Failed to create notebook")
     return nb
@@ -180,23 +284,56 @@ async def nb_stats(nb_id: str) -> dict[str, int]:
 
 
 # ---------------------------------------------------------------------------
-# Upload endpoint  (blocking I/O offloaded to thread pool)
+# Upload endpoint  — SSE stream with live progress
 # ---------------------------------------------------------------------------
 @app.post("/api/notebooks/{nb_id}/upload")
-async def upload_source(nb_id: str, file: UploadFile = File(...)) -> dict[str, Any]:
-    _require_notebook(nb_id)
+async def upload_source(nb_id: str, file: UploadFile = File(...)) -> StreamingResponse:
+    return StreamingResponse(
+        _ingest_generator(nb_id, file),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+async def _ingest_generator(nb_id: str, file: UploadFile) -> AsyncGenerator[str, None]:
+    # 1. Validate notebook
+    try:
+        _require_notebook(nb_id)
+    except HTTPException as exc:
+        yield _sse({"type": "error", "content": str(exc.detail)})
+        return
+
+    # 2. Validate file type and size, then save
+    _ALLOWED_EXTS   = {".pdf", ".docx", ".doc"}
+    _MAX_UPLOAD_MB  = 200
+    _MAX_UPLOAD_BYTES = _MAX_UPLOAD_MB * 1024 * 1024
 
     safe_name = Path(file.filename or "upload.pdf").name
+    file_ext  = Path(safe_name).suffix.lower()
+
+    if file_ext not in _ALLOWED_EXTS:
+        yield _sse({"type": "error",
+                    "content": f"Unsupported file type '{file_ext}'. Please upload a PDF or DOCX file."})
+        return
+
     nb_raw = nb_raw_dir(_raw_dir, nb_id)
     nb_proc = nb_processed_dir(_processed_dir, nb_id)
     nb_raw.mkdir(parents=True, exist_ok=True)
     nb_proc.mkdir(parents=True, exist_ok=True)
 
+    yield _sse({"type": "progress", "msg": f"Saving {safe_name}…"})
     dest = nb_raw / safe_name
     content = await file.read()
+
+    if len(content) > _MAX_UPLOAD_BYTES:
+        size_mb = len(content) / (1024 * 1024)
+        yield _sse({"type": "error",
+                    "content": f"File too large ({size_mb:.0f} MB). Maximum allowed size is {_MAX_UPLOAD_MB} MB."})
+        return
+
     dest.write_bytes(content)
 
-    # Skip-if-already-indexed: check LanceDB before running ingest+embed
+    # 3. Skip-if-already-indexed cache check
     md_stem = Path(safe_name).stem + ".md"
     already_indexed = False
     try:
@@ -217,24 +354,53 @@ async def upload_source(nb_id: str, file: UploadFile = File(...)) -> dict[str, A
         pass
 
     if already_indexed:
-        return {"status": "cached", "source": md_stem, "chunks": 0, "cached": True}
+        yield _sse({"type": "done", "source": md_stem, "chunks": 0, "cached": True})
+        return
 
+    # 4. Ingest with live progress fed through asyncio.Queue
     loop = asyncio.get_running_loop()
+    q: asyncio.Queue[str | None] = asyncio.Queue()
 
-    try:
-        md_path = await loop.run_in_executor(None, ingest_pdf, dest, nb_proc, "docling", _cfg)
-    except Exception as exc:
-        raise HTTPException(500, f"Ingest failed: {exc}") from exc
+    def _progress(msg: str) -> None:
+        loop.call_soon_threadsafe(q.put_nowait, msg)
 
+    ingest_result: dict[str, Any] = {}
+
+    def _do_ingest() -> None:
+        try:
+            md_path = ingest_file(dest, nb_proc, "docling", _cfg, _progress)
+            ingest_result["md_path"] = md_path
+        except Exception as exc:
+            ingest_result["error"] = str(exc)
+        finally:
+            loop.call_soon_threadsafe(q.put_nowait, None)
+
+    threading.Thread(target=_do_ingest, daemon=True).start()
+
+    while True:
+        msg = await q.get()
+        if msg is None:
+            break
+        yield _sse({"type": "progress", "msg": msg})
+
+    if "error" in ingest_result:
+        yield _sse({"type": "error", "content": f"Ingest failed: {ingest_result['error']}"})
+        return
+
+    md_path = ingest_result["md_path"]
+
+    # 5. Embed + index (run in thread pool; no per-chunk progress needed)
+    yield _sse({"type": "progress", "msg": "Embedding and indexing chunks…"})
     try:
         chunks_override = nb_chunks_path(_processed_dir, nb_id)
         n = await loop.run_in_executor(
             None, index_markdown, md_path, _cfg, nb_id, chunks_override
         )
     except Exception as exc:
-        raise HTTPException(500, f"Indexing failed: {exc}") from exc
+        yield _sse({"type": "error", "content": f"Indexing failed: {exc}"})
+        return
 
-    return {"status": "ok", "source": md_path.name, "chunks": n}
+    yield _sse({"type": "done", "source": md_path.name, "chunks": n})
 
 
 # ---------------------------------------------------------------------------
@@ -391,6 +557,7 @@ async def chat_stream(req: ChatRequest) -> StreamingResponse:
 async def _chat_generator(req: ChatRequest) -> AsyncGenerator[str, None]:
     message = req.message.strip()
     nb_id = req.nb_id
+    selected_sources = req.selected_sources
 
     if not message:
         yield _sse({"type": "error", "content": "Empty message"})
@@ -398,32 +565,33 @@ async def _chat_generator(req: ChatRequest) -> AsyncGenerator[str, None]:
     if not nb_id:
         yield _sse({"type": "error", "content": "No notebook selected"})
         return
+    if not selected_sources:
+        yield _sse({"type": "error", "content": "No sources selected. Please select at least one source."})
+        return
 
     proc = nb_processed_dir(_processed_dir, nb_id)
-    sources = get_nb_sources(proc)
-    if not sources:
-        yield _sse({"type": "error", "content": "No sources in this notebook. Upload a PDF first."})
-        return
+    nb = _require_notebook(nb_id)
+    core_category = nb.get("equipment_category", "")
 
     # Build retrieval query enriched with recent user turns
     prior_qs = " ".join(
         m["content"] for m in (req.history[-4:] if req.history else [])
         if m.get("role") == "user"
     )
-    retrieval_query = f"{prior_qs} {message}".strip() if prior_qs else message
+    retrieval_query = _expand_query(f"{prior_qs} {message}".strip() if prior_qs else message)
 
     loop = asyncio.get_running_loop()
 
     try:
         contexts = await loop.run_in_executor(
-            None, retrieve, retrieval_query, _cfg, _retrieval_mode, nb_id, proc
+            None, retrieve, retrieval_query, _cfg, _retrieval_mode, nb_id, proc, selected_sources, core_category
         )
     except Exception as exc:
         yield _sse({"type": "error", "content": f"Retrieval error: {exc}"})
         return
 
     if not contexts:
-        yield _sse({"type": "token", "content": "No relevant content found in the loaded documents."})
+        yield _sse({"type": "token", "content": "No relevant content found in the selected sources."})
         yield _sse({"type": "done", "citations": []})
         return
 
@@ -436,7 +604,7 @@ async def _chat_generator(req: ChatRequest) -> AsyncGenerator[str, None]:
             if nxt and nxt.get("role") == "assistant":
                 hist_tuples.append((msg["content"], nxt["content"]))
 
-    prompt = build_prompt(message, contexts, hist_tuples, sources, _history_turns)
+    prompt = build_prompt(message, contexts, hist_tuples, selected_sources, _history_turns)
 
     citations = [
         {
@@ -449,8 +617,8 @@ async def _chat_generator(req: ChatRequest) -> AsyncGenerator[str, None]:
     ]
 
     # Bridge: sync Ollama stream → async SSE via queue
+    # Sentinel prefixes: \x00ERR: = error, \x01 = think-block started, \x02 = thinking token
     q: asyncio.Queue[str | None] = asyncio.Queue()
-    stripper = ThinkStripper() if not _show_thinking else None
 
     def _stream_ollama() -> None:
         try:
@@ -458,31 +626,25 @@ async def _chat_generator(req: ChatRequest) -> AsyncGenerator[str, None]:
                 model=_reasoning_model,
                 messages=[{"role": "user", "content": prompt}],
                 stream=True,
+                think=True,  # ask Ollama to expose reasoning via chunk.message.thinking
                 options={
                     "num_ctx": int(_runtime.get("ollama_ctx_num", 8192)),
                     "num_thread": int(_runtime.get("ollama_num_thread", 8)),
                 },
             )
-            _notified_thinking = False
+            notified = False
             for chunk in stream:
-                raw_token = chunk.message.content or ""
-                if stripper:
-                    # Notify frontend once when think block starts
-                    was_thinking = stripper._in_think
-                    token = stripper.feed(raw_token)
-                    if stripper._in_think and not was_thinking and not _notified_thinking:
-                        loop.call_soon_threadsafe(q.put_nowait, "\x01THINKING")
-                        _notified_thinking = True
-                else:
-                    token = raw_token
-                if token:
-                    loop.call_soon_threadsafe(q.put_nowait, token)
+                thinking = getattr(chunk.message, "thinking", None) or ""
+                content  = chunk.message.content or ""
 
-            # Flush remaining buffer
-            if stripper:
-                tail = stripper.flush()
-                if tail:
-                    loop.call_soon_threadsafe(q.put_nowait, tail)
+                if thinking:
+                    if not notified:
+                        loop.call_soon_threadsafe(q.put_nowait, "\x01")
+                        notified = True
+                    loop.call_soon_threadsafe(q.put_nowait, "\x02" + thinking)
+
+                if content:
+                    loop.call_soon_threadsafe(q.put_nowait, content)
 
         except Exception as exc:
             loop.call_soon_threadsafe(q.put_nowait, f"\x00ERR:{exc}")
@@ -495,11 +657,14 @@ async def _chat_generator(req: ChatRequest) -> AsyncGenerator[str, None]:
         token = await q.get()
         if token is None:
             break
-        if isinstance(token, str) and token.startswith("\x00ERR:"):
+        if token.startswith("\x00ERR:"):
             yield _sse({"type": "error", "content": token[5:]})
             return
-        if token == "\x01THINKING":
+        if token == "\x01":
             yield _sse({"type": "thinking"})
+            continue
+        if token.startswith("\x02"):
+            yield _sse({"type": "thinking_token", "content": token[1:]})
             continue
         yield _sse({"type": "token", "content": token})
 
