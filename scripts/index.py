@@ -3,10 +3,14 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import asdict, dataclass
+import logging
 from pathlib import Path
 from typing import Any
+from tqdm import tqdm
 
 from common import ensure_ollama_models, ensure_python_package, load_config, require_path, resolve_path
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -243,6 +247,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] [index] %(message)s")
+
     ensure_python_package("langchain_text_splitters")
 
     cfg = load_config(args.config)
@@ -276,7 +282,7 @@ def main() -> None:
         markdown = read_markdown(md_path)
         chunks = split_markdown(markdown, min_chars=min_chars, max_chars=max_chars,
                                 overlap=overlap, source_name=md_path.name)
-        print(f"  {md_path.name}: {len(chunks)} chunks")
+        log.info(f"{md_path.name}: {len(chunks)} chunks")
         all_chunks.extend(chunks)
 
     if not all_chunks:
@@ -287,11 +293,11 @@ def main() -> None:
         chunk.id = f"chunk-{i:08d}"
 
     save_jsonl(all_chunks, chunks_output)
-    print(f"\nTotal chunks: {len(all_chunks)}")
-    print(f"Chunk file: {chunks_output}")
+    log.info(f"Total chunks: {len(all_chunks)}")
+    log.info(f"Chunk file: {chunks_output}")
 
     if args.skip_vectors:
-        print("Skipped vector indexing by request.")
+        log.info("Skipped vector indexing by request.")
         return
 
     ensure_python_package("lancedb")
@@ -311,7 +317,9 @@ def main() -> None:
         f"[{c.section_path}]\n{c.text}" if c.section_path else c.text
         for c in all_chunks
     ]
-    for i in range(0, len(embed_texts), batch_size):
+    
+    log.info(f"Embedding {len(all_chunks)} chunks manually...")
+    for i in tqdm(range(0, len(embed_texts), batch_size), desc="Embedding batches"):
         batch = embed_texts[i : i + batch_size]
         vectors = embedder.embed_documents(batch)
         for j, vector in enumerate(vectors):
@@ -332,7 +340,7 @@ def main() -> None:
         db.drop_table(table_name)
     db.create_table(table_name, data=rows)
 
-    print(f"LanceDB: {db_dir} / table={table_name}")
+    log.info(f"LanceDB index built at: {db_dir} / table={table_name}")
 
 
 if __name__ == "__main__":

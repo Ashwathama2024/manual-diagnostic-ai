@@ -1,0 +1,9 @@
+[2026-03-31 10:00:00,000 INFO] [ingest] Docling Python API: converting sample_manual.pdf (OCR=True, vision=True)
+[2026-03-31 10:00:05,000 INFO] [ingest] Found 2 picture(s) in sample_manual.pdf
+[2026-03-31 10:00:05,100 INFO] [ingest]   Captioning figure 1/2 …
+[2026-03-31 10:00:15,000 INFO] [ingest]   Figure 1: 520 chars
+[2026-03-31 10:00:20,000 INFO] [ingest] ✓ sample_manual.pdf → 14500 chars (Python API)
+[2026-03-31 10:00:22,000 INFO] [index]  sample_manual.md: 18 chunks
+[2026-03-31 10:00:22,500 INFO] [index] Total chunks: 18
+[2026-03-31 10:00:30,000 INFO] [index] Embedding 18 chunks...
+[2026-03-31 10:00:45,000 INFO] [index] LanceDB: data/processed / table=notebooks

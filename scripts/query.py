@@ -5,12 +5,15 @@ import json
 import math
 import os
 import re
+import logging
 from collections import Counter
 from pathlib import Path
 from textwrap import dedent
 from typing import Any
 
 from common import ensure_ollama_models, ensure_python_package, load_config, require_path, resolve_path
+
+log = logging.getLogger(__name__)
 
 
 TOKEN_RE = re.compile(r"[A-Za-z0-9_]+")
@@ -182,6 +185,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] [query] %(message)s")
+
     ensure_python_package("ollama")
 
     cfg = load_config(args.config)
@@ -232,17 +237,17 @@ def main() -> None:
         },
     )
 
-    print("=== Answer ===")
-    print(response["message"]["content"])
-    print(f"\n=== Retrieved Chunks ({retrieval_mode}) ===")
+    log.info("=== Answer ===")
+    print(response["message"]["content"])  # Keep print for actual LLM response so it pipes well
+    log.info(f"\n=== Retrieved Chunks ({retrieval_mode}) ===")
     for i, chunk in enumerate(contexts, start=1):
         section = chunk.get("section_path", "")
         score = chunk.get("score")
         score_text = f" score={score}" if score is not None else ""
-        print(f"[{i}]{score_text} {section}")
+        log.info(f"[{i}]{score_text} {section}")
 
-    print("\n=== Retrieval Payload (JSON) ===")
-    print(json.dumps(contexts, ensure_ascii=True, indent=2)[:4000])
+    log.debug("\n=== Retrieval Payload (JSON) ===")
+    log.debug(json.dumps(contexts, ensure_ascii=True, indent=2)[:4000])
 
 
 if __name__ == "__main__":

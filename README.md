@@ -248,8 +248,7 @@ Yes — change `models.reasoning` in `config.yaml` to any model you've pulled vi
 **Q: How do I enable vision diagram captioning?**
 Set `vision.enabled: true` in `config.yaml`. Requires `minicpm-v` pulled via Ollama. Strongly recommended to have GPU — CPU inference is ~3 min/image.
 
-**Q: Why LanceDB instead of ChromaDB?**
-LanceDB is serverless (no daemon process) and stores data as flat files — simpler to deploy, backup, and version. It also supports columnar filtering for notebook isolation.
+
 
 ---
 
