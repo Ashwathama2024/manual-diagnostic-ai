@@ -18,6 +18,36 @@ log = logging.getLogger(__name__)
 
 TOKEN_RE = re.compile(r"[A-Za-z0-9_]+")
 
+# ── Chunk cache ──────────────────────────────────────────────────────────────
+# Avoids re-reading chunks.jsonl from disk on every query.
+# Keyed by nb_id; invalidated by invalidate_chunk_cache() after each upload.
+_chunk_cache: dict[str, list[dict[str, Any]]] = {}
+
+
+def invalidate_chunk_cache(nb_id: str) -> None:
+    """Drop cached chunks for nb_id so the next retrieval re-reads from disk."""
+    _chunk_cache.pop(nb_id, None)
+
+
+# ── Persistent retrieval globals ─────────────────────────────────────────────
+# Pre-initialised at server startup; avoids creating new objects per query.
+_db_conn: Any = None
+_embedder: Any = None
+
+
+def init_retrieval(db_dir: str, embedding_model: str) -> None:
+    """
+    Pre-initialise the LanceDB connection and OllamaEmbeddings instance.
+    Call once at server startup from a sync context.
+    Falls back to per-query init if not called (e.g. CLI usage).
+    """
+    global _db_conn, _embedder
+    import lancedb
+    from langchain_ollama import OllamaEmbeddings
+    _db_conn = lancedb.connect(db_dir)
+    _embedder = OllamaEmbeddings(model=embedding_model)
+    log.info("init_retrieval: LanceDB + embedder ready  db=%s  model=%s", db_dir, embedding_model)
+
 
 def tokenize(text: str) -> list[str]:
     return [token.lower() for token in TOKEN_RE.findall(text)]
@@ -56,7 +86,10 @@ def build_prompt(question: str, contexts: list[dict[str, Any]], retrieval_mode: 
     ).strip()
 
 
-def load_chunks(chunks_path: Path) -> list[dict[str, Any]]:
+def load_chunks(chunks_path: Path, nb_id: str = "") -> list[dict[str, Any]]:
+    """Load chunks from disk, using the module-level cache when nb_id is provided."""
+    if nb_id and nb_id in _chunk_cache:
+        return _chunk_cache[nb_id]
     require_path(chunks_path, "Chunks JSONL")
     chunks: list[dict[str, Any]] = []
     with chunks_path.open("r", encoding="utf-8") as f:
@@ -64,6 +97,8 @@ def load_chunks(chunks_path: Path) -> list[dict[str, Any]]:
             line = line.strip()
             if line:
                 chunks.append(json.loads(line))
+    if nb_id:
+        _chunk_cache[nb_id] = chunks
     return chunks
 
 
@@ -77,11 +112,14 @@ def retrieve_vector(
     selected_sources: list[str] | None = None,
     core_category: str = "",
 ) -> list[dict[str, Any]]:
-    import lancedb
-    from langchain_ollama import OllamaEmbeddings
-
-    db = lancedb.connect(db_dir)
-    embedder = OllamaEmbeddings(model=embedding_model)
+    if _db_conn is not None and _embedder is not None:
+        db = _db_conn
+        embedder = _embedder
+    else:
+        import lancedb
+        from langchain_ollama import OllamaEmbeddings
+        db = lancedb.connect(db_dir)
+        embedder = OllamaEmbeddings(model=embedding_model)
     q_vec = embedder.embed_query(question)
     
     selected_sources = selected_sources or []
@@ -205,9 +243,9 @@ def retrieve_vectorless(
     
     all_chunks = []
     
-    # 1. Load Notebook Chunks
+    # 1. Load Notebook Chunks (uses in-memory cache when notebook_id is provided)
     if chunks_path.exists() and nb_sources:
-        chunks = load_chunks(chunks_path)
+        chunks = load_chunks(chunks_path, notebook_id)
         if notebook_id:
             chunks = [c for c in chunks if c.get("notebook_id", "") == notebook_id]
         chunks = [c for c in chunks if c.get("source", "") in nb_sources]
@@ -274,10 +312,48 @@ def retrieve_hybrid(
     selected_sources: list[str] | None = None,
     core_category: str = "",
 ) -> list[dict[str, Any]]:
-    lexical = retrieve_vectorless(question, chunks_path, top_k * 2, notebook_id, selected_sources, core_category)
-    vector = retrieve_vector(question, db_dir, table_name, top_k * 2, embedding_model, notebook_id, selected_sources, core_category)
-    merged = lexical + vector
-    return dedupe_by_id(merged, top_k)
+    """
+    Hybrid retrieval using Reciprocal Rank Fusion (RRF).
+
+    Both BM25 and vector results are ranked lists; RRF fuses them via:
+        score(chunk) = Σ  1 / (rank + RRF_K)   across all lists
+
+    This is scale-agnostic (no score normalisation needed) and consistently
+    outperforms naive score-based merging.  RRF_K=60 is the standard constant.
+    """
+    _RRF_K = 60
+
+    lexical = retrieve_vectorless(
+        question, chunks_path, top_k * 2, notebook_id, selected_sources, core_category
+    )
+    vector = retrieve_vector(
+        question, db_dir, table_name, top_k * 2, embedding_model,
+        notebook_id, selected_sources, core_category
+    )
+
+    rrf_scores: dict[str, float] = {}
+    rrf_chunks: dict[str, dict[str, Any]] = {}  # id → first-seen chunk dict
+
+    for rank, chunk in enumerate(lexical):
+        cid = str(chunk.get("id", id(chunk)))
+        rrf_scores[cid] = rrf_scores.get(cid, 0.0) + 1.0 / (rank + _RRF_K)
+        if cid not in rrf_chunks:
+            rrf_chunks[cid] = chunk
+
+    for rank, chunk in enumerate(vector):
+        cid = str(chunk.get("id", id(chunk)))
+        rrf_scores[cid] = rrf_scores.get(cid, 0.0) + 1.0 / (rank + _RRF_K)
+        if cid not in rrf_chunks:
+            rrf_chunks[cid] = chunk
+
+    # Sort descending by RRF score; attach score to chunk for downstream display
+    ranked = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
+    result: list[dict[str, Any]] = []
+    for cid, score in ranked[:top_k]:
+        chunk = dict(rrf_chunks[cid])
+        chunk["score"] = round(score, 8)
+        result.append(chunk)
+    return result
 
 
 def resolve_retrieval_mode(args_mode: str | None, cfg: dict[str, Any]) -> str:

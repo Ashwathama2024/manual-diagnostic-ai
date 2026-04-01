@@ -31,6 +31,9 @@ from common import load_config, resolve_path
 from ingest import ingest_pdf
 from index import index_markdown, read_markdown, split_markdown
 
+# Re-export query-layer helpers so server.py can import them from one place
+from query import init_retrieval, invalidate_chunk_cache  # noqa: F401
+
 CORE_CATEGORIES = [
     "1_propulsion_main_machinery",
     "2_fuel_oil_purification",

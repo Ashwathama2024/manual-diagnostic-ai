@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +26,13 @@ _MAP_LOCK = threading.Lock()
 _QUERY_LOG_MAX = 500
 _BOOST_CAP     = 2.0
 _DECAY_DAYS    = 90.0   # e-folding half-life for boost decay
+
+# ── Boost table cache ────────────────────────────────────────────────────────
+# Avoids re-reading the query-map JSON on every query.
+# Entry format:  {nb_id: (boost_table_dict, monotonic_timestamp)}
+# Invalidated immediately after update_map() writes new data.
+_boost_cache: dict[str, tuple[dict[str, float], float]] = {}
+_BOOST_CACHE_TTL = 60.0  # seconds
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +136,7 @@ def update_map(
                 section_usage[section] = section_usage.get(section, 0) + 1
 
         save_map(maps_dir, nb_id, data)
+        _boost_cache.pop(nb_id, None)  # force cache refresh on next query
         return data["total_queries"]
 
 
@@ -139,7 +148,14 @@ def get_boost_table(maps_dir: Path, nb_id: str) -> dict[str, float]:
     decay = exp(-days_since_last_seen / DECAY_DAYS)
 
     Keys are "source::section" strings matching citation format.
+    Result is cached for _BOOST_CACHE_TTL seconds; invalidated by update_map().
     """
+    cached = _boost_cache.get(nb_id)
+    if cached is not None:
+        table, ts = cached
+        if (time.monotonic() - ts) < _BOOST_CACHE_TTL:
+            return table
+
     data = load_map(maps_dir, nb_id)
     chunk_usage: dict[str, Any] = data.get("chunk_usage", {})
     if not chunk_usage:
@@ -161,6 +177,7 @@ def get_boost_table(maps_dir: Path, nb_id: str) -> dict[str, float]:
         boost = min(_BOOST_CAP, 1.0 + 0.1 * math.log1p(count) * decay)
         boost_table[key] = boost
 
+    _boost_cache[nb_id] = (boost_table, time.monotonic())
     return boost_table
 
 

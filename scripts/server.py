@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -52,6 +53,8 @@ from app import (
     find_notebook_by_name,
     format_sources_display,  # noqa: F401
     get_nb_sources,
+    init_retrieval,          # pre-warm LanceDB + embedder at startup
+    invalidate_chunk_cache,  # called after each successful upload+index
     load_notebooks,
     nb_chunks_path,
     nb_processed_dir,
@@ -242,6 +245,15 @@ async def _startup() -> None:
     from ollama import Client
     _ollama_client = Client(host="http://127.0.0.1:11434")
     print(f"[ManualIQ] server ready — model={_reasoning_model}  retrieval={_retrieval_mode}")
+
+    # Pre-warm LanceDB connection + embedding model so first query has no cold-start
+    try:
+        _db_dir  = str(resolve_path(_cfg["paths"]["lancedb_dir"]))
+        _emb_mdl = _cfg["models"]["embedding"]
+        init_retrieval(_db_dir, _emb_mdl)
+        print(f"[ManualIQ] Retrieval pre-warmed — db={_db_dir}  embedder={_emb_mdl}")
+    except Exception as _pw_err:
+        print(f"[ManualIQ] init_retrieval skipped (will init on first query): {_pw_err}")
 
     # Launch core knowledge ingestion automatically
     def _run_core_preflight():
@@ -549,6 +561,8 @@ async def _ingest_generator(nb_id: str, file: UploadFile) -> AsyncGenerator[str,
     timestamps[md_path.name] = datetime.datetime.utcnow().isoformat() + "Z"
     ts_path.write_text(json.dumps(timestamps, indent=2, ensure_ascii=False), encoding="utf-8")
 
+    # Invalidate chunk cache so next query reads the freshly indexed data
+    invalidate_chunk_cache(nb_id)
     yield _sse({"type": "done", "source": md_path.name, "chunks": n})
 
 
@@ -841,13 +855,24 @@ async def _chat_generator(req: ChatRequest) -> AsyncGenerator[str, None]:
         full_answer += token
         yield _sse({"type": "token", "content": token})
 
-    yield _sse({"type": "done", "citations": citations})
+    # Filter citations to only those the model actually referenced in its answer.
+    # The system prompt enforces [Chunk N] markers; parse them to find real usage.
+    _cited_indices: set[int] = {
+        int(m) for m in re.findall(r"\[Chunk\s+(\d+)\]", full_answer, re.IGNORECASE)
+    }
+    actual_citations = (
+        [c for c in citations if c["index"] in _cited_indices]
+        if _cited_indices
+        else citations  # fallback: model produced no markers → keep all
+    )
+
+    yield _sse({"type": "done", "citations": actual_citations})
 
     # Persist chat turn + update query map after streaming completes (non-blocking)
     if full_answer:
         def _post_stream_tasks() -> None:
-            _persist_chat_turn(nb_id, message, full_answer, citations)
-            total = update_map(_maps_dir, nb_id, message, citations, _retrieval_mode)
+            _persist_chat_turn(nb_id, message, full_answer, actual_citations)
+            total = update_map(_maps_dir, nb_id, message, actual_citations, _retrieval_mode)
             # Regenerate memory summary every 20 queries
             if total > 0 and total % 20 == 0:
                 try:
