@@ -22,7 +22,7 @@ indexing:
 
 retrieval:
   mode: hybrid
-  top_k: 6
+  top_k: 10            # maximised — offline system, no latency/cost penalty
   load_balance: true   # guarantee ≥1 chunk per source in context (prevents large docs crowding out small ones)
 
 chat:
@@ -38,4 +38,5 @@ vision:
 runtime:
   # Tuned for 32 GB RAM laptop with 16 logical processors
   ollama_num_thread: 12
-  ollama_ctx_num: 8192
+  ollama_ctx_num: 16384      # doubled — accommodates 10 large chunks + memory summary + history
+  ollama_num_predict: 4096   # fixed generous output ceiling; offline = no cost penalty

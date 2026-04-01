@@ -798,8 +798,9 @@ async def _chat_generator(req: ChatRequest) -> AsyncGenerator[str, None]:
                 stream=True,
                 think=True,  # ask Ollama to expose reasoning via chunk.message.thinking
                 options={
-                    "num_ctx": int(_runtime.get("ollama_ctx_num", 8192)),
-                    "num_thread": int(_runtime.get("ollama_num_thread", 8)),
+                    "num_ctx":     int(_runtime.get("ollama_ctx_num",     16384)),
+                    "num_thread":  int(_runtime.get("ollama_num_thread",  8)),
+                    "num_predict": int(_runtime.get("ollama_num_predict", 4096)),
                 },
             )
             notified = False
