@@ -5,6 +5,8 @@ paths:
   lancedb_dir: data/lancedb
   lancedb_table: manual_chunks
   notebooks_registry: data/notebooks.json
+  chats_dir: data/chats
+  maps_dir: data/maps
 
 models:
   embedding: nomic-embed-text
@@ -21,6 +23,7 @@ indexing:
 retrieval:
   mode: hybrid
   top_k: 6
+  load_balance: true   # guarantee ≥1 chunk per source in context (prevents large docs crowding out small ones)
 
 chat:
   show_thinking: false

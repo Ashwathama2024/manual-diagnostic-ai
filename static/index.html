@@ -346,7 +346,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  scroll-behavior: smooth;
+  scroll-behavior: auto;
 }
 #empty-state {
   color: var(--muted);
@@ -622,6 +622,130 @@ body {
 
 /* After markdown rendering, switch off pre-wrap so HTML blocks flow normally */
 .msg-bubble.rendered { white-space: normal; }
+
+/* ── Assistant message wrapper — relative for copy btn ─────── */
+.msg.assistant { position: relative; }
+
+/* ── Copy button ────────────────────────────────────────────── */
+.copy-btn {
+  position: absolute;
+  bottom: 6px;
+  right: 6px;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 5px;
+  padding: 3px 8px;
+  font-size: 0.72rem;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.12s, color 0.12s;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.msg.assistant:hover .copy-btn,
+.copy-btn:focus { opacity: 1; }
+.copy-btn:hover { background: var(--panel); color: var(--blue-text); border-color: var(--accent); }
+.copy-btn.copied { color: #3fb950; border-color: #3fb950; }
+
+/* ── Source timestamp label ─────────────────────────────────── */
+.source-ts {
+  font-size: 0.65rem;
+  color: var(--muted);
+  font-family: var(--mono);
+  margin-left: 4px;
+  opacity: 0.7;
+}
+
+/* ── Chat toolbar (title bar right side) ────────────────────── */
+#chat-toolbar {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.toolbar-btn {
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 5px;
+  padding: 3px 10px;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  white-space: nowrap;
+}
+.toolbar-btn:hover { background: var(--panel); color: var(--text); border-color: var(--accent); }
+
+/* ── Notebook settings panel ────────────────────────────────── */
+#nb-settings-panel {
+  padding: 0 14px 10px;
+  flex-shrink: 0;
+  display: none;
+}
+#nb-settings-panel.open { display: block; }
+#nb-settings-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  padding: 6px 14px 4px;
+  user-select: none;
+}
+#nb-settings-toggle:hover { color: var(--text); }
+#nb-settings-toggle .settings-chevron { font-size: 0.6rem; transition: transform 0.15s; }
+#nb-settings-panel.open + * { /* spacing handled by padding */ }
+#custom-prompt-ta {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--r);
+  padding: 7px 10px;
+  font-size: 0.78rem;
+  font-family: var(--font);
+  resize: vertical;
+  min-height: 62px;
+  max-height: 180px;
+  line-height: 1.5;
+  margin-top: 6px;
+}
+#custom-prompt-ta:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 2px rgba(56,139,253,0.18); }
+#custom-prompt-ta::placeholder { color: var(--muted); font-style: italic; }
+.settings-hint {
+  font-size: 0.66rem;
+  color: var(--muted);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+/* Intelligence panel — reuses settings-panel structure */
+#nb-intel-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  padding: 6px 14px 4px;
+  user-select: none;
+}
+#nb-intel-toggle:hover { color: var(--text); }
+#nb-intel-panel {
+  padding: 0 14px 10px;
+  flex-shrink: 0;
+  display: none;
+}
+#nb-intel-panel.open { display: block; }
+#nb-memory-text { white-space: pre-wrap; font-style: italic; }
 </style>
 </head>
 <body>
@@ -677,6 +801,32 @@ body {
 
     </div>
 
+    <!-- Settings toggle + panel -->
+    <div id="nb-settings-toggle" onclick="Actions.toggleSettings()">
+      <span>⚙ Notebook Settings</span>
+      <span class="settings-chevron" id="settings-chevron">▾</span>
+    </div>
+    <div id="nb-settings-panel">
+      <textarea id="custom-prompt-ta"
+        placeholder="Custom instructions for this notebook… e.g. 'Always respond in metric units' or 'Focus on troubleshooting procedures'"
+        rows="3"></textarea>
+      <div class="settings-hint">Saved automatically · Prepended to every prompt in this notebook</div>
+    </div>
+
+    <!-- Notebook Intelligence panel -->
+    <div id="nb-intel-toggle" onclick="Actions.toggleIntel()">
+      <span>🧠 Notebook Intelligence</span>
+      <span class="settings-chevron" id="intel-chevron">▾</span>
+    </div>
+    <div id="nb-intel-panel">
+      <div id="nb-memory-text" class="settings-hint" style="min-height:36px;line-height:1.6;">
+        (No memory yet — ask 20 questions to generate)
+      </div>
+      <button class="toolbar-btn" id="regen-memory-btn" style="margin-top:6px;width:100%;">
+        ↺ Regenerate
+      </button>
+    </div>
+
     <!-- Stats pinned at bottom of sidebar -->
     <div id="sidebar-stats">No notebook selected</div>
   </aside>
@@ -688,6 +838,10 @@ body {
     <div id="nb-title-bar">
       <span id="nb-title-text">— Select a notebook —</span>
       <span id="nb-stats-badge"></span>
+      <div id="chat-toolbar">
+        <button class="toolbar-btn" id="export-btn" title="Export conversation as Markdown">⬇ Export</button>
+        <button class="toolbar-btn" id="clear-history-btn" title="Clear chat history">✕ Clear</button>
+      </div>
     </div>
 
     <!-- Messages -->
@@ -807,6 +961,18 @@ const API = {
       body: JSON.stringify({nb_id: nbId, message, history, selected_sources: selectedSources}),
     });
   },
+
+  getHistory(nbId)     { return this._json(`/api/notebooks/${nbId}/history`); },
+  clearHistory(nbId)   { return this._json(`/api/notebooks/${nbId}/history`, {method:'DELETE'}); },
+  updateNotebook(nbId, data) {
+    return this._json(`/api/notebooks/${nbId}`, {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(data),
+    });
+  },
+  getMemory(nbId)          { return this._json(`/api/notebooks/${nbId}/memory`); },
+  regenerateMemory(nbId)   { return this._json(`/api/notebooks/${nbId}/memory/regenerate`, {method:'POST'}); },
 };
 
 /* ── Toast ────────────────────────────────────────────────── */
@@ -822,6 +988,22 @@ const Toast = (() => {
     },
   };
 })();
+
+/* ── Copy button helper ───────────────────────────────────── */
+function _makeCopyBtn(rawText) {
+  const btn = document.createElement('button');
+  btn.className = 'copy-btn';
+  btn.title = 'Copy answer';
+  btn.textContent = '⧉ Copy';
+  btn.addEventListener('click', () => {
+    navigator.clipboard.writeText(rawText).then(() => {
+      btn.textContent = '✓ Copied';
+      btn.classList.add('copied');
+      setTimeout(() => { btn.textContent = '⧉ Copy'; btn.classList.remove('copied'); }, 1500);
+    }).catch(() => Toast.show('Copy failed', 'error'));
+  });
+  return btn;
+}
 
 /* ── Render ───────────────────────────────────────────────── */
 const Render = {
@@ -869,7 +1051,7 @@ const Render = {
     });
   },
 
-  sources(sources, selected) {
+  sources(sources, selected, timestamps = {}) {
     const ul = document.getElementById('sources-list');
     const removeBtn = document.getElementById('remove-btn');
     ul.innerHTML = '';
@@ -882,36 +1064,35 @@ const Render = {
       removeBtn.disabled = true;
       return;
     }
-    
+
     // Add Core Knowledge if category exists
     if (State.activeNbCat) {
-       const li = document.createElement('li');
-       const isSelected = selected.includes('core');
-       if (isSelected) li.classList.add('selected');
+      const li = document.createElement('li');
+      const isSelected = selected.includes('core');
+      if (isSelected) li.classList.add('selected');
 
-       const cb = document.createElement('input');
-       cb.type = 'checkbox';
-       cb.className = 'src-checkbox';
-       cb.checked = isSelected;
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.className = 'src-checkbox';
+      cb.checked = isSelected;
 
-       const name = document.createElement('span');
-       name.className = 'src-name';
-       name.textContent = `Core: ${State.activeNbCat.replace(/_/g, ' ')}`;
-       name.title = 'Core Knowledge Base';
+      const name = document.createElement('span');
+      name.className = 'src-name';
+      name.textContent = `Core: ${State.activeNbCat.replace(/_/g, ' ')}`;
+      name.title = 'Core Knowledge Base';
 
-       li.appendChild(cb);
-       li.appendChild(name);
-       
-       li.addEventListener('click', (e) => {
-         if (e.target !== cb) cb.checked = !cb.checked;
-         if (cb.checked) {
-             if (!State.selectedSources.includes('core')) State.selectedSources.push('core');
-         } else {
-             State.selectedSources = State.selectedSources.filter(s => s !== 'core');
-         }
-         Render.sources(sources, State.selectedSources);
-       });
-       ul.appendChild(li);
+      li.appendChild(cb);
+      li.appendChild(name);
+      li.addEventListener('click', (e) => {
+        if (e.target !== cb) cb.checked = !cb.checked;
+        if (cb.checked) {
+          if (!State.selectedSources.includes('core')) State.selectedSources.push('core');
+        } else {
+          State.selectedSources = State.selectedSources.filter(s => s !== 'core');
+        }
+        Render.sources(sources, State.selectedSources, timestamps);
+      });
+      ul.appendChild(li);
     }
 
     sources.forEach(s => {
@@ -924,28 +1105,40 @@ const Render = {
       cb.className = 'src-checkbox';
       cb.checked = isSelected;
 
-      // Original icon logic...
       const icon = document.createElement('span');
       icon.className = 'src-icon';
       icon.textContent = '📄 ';
+
+      const nameWrap = document.createElement('span');
+      nameWrap.style.display = 'flex';
+      nameWrap.style.flexDirection = 'column';
+      nameWrap.style.minWidth = '0';
 
       const name = document.createElement('span');
       name.className = 'src-name';
       name.textContent = s;
       name.title = s;
+      nameWrap.appendChild(name);
+
+      if (timestamps[s]) {
+        const d = new Date(timestamps[s]);
+        const tsEl = document.createElement('span');
+        tsEl.className = 'source-ts';
+        tsEl.textContent = d.toLocaleDateString(undefined, {month:'short', day:'numeric', year:'numeric'});
+        nameWrap.appendChild(tsEl);
+      }
 
       li.appendChild(cb);
       li.appendChild(icon);
-      li.appendChild(name);
-      
+      li.appendChild(nameWrap);
       li.addEventListener('click', (e) => {
         if (e.target !== cb) cb.checked = !cb.checked;
         if (cb.checked) {
-            if (!State.selectedSources.includes(s)) State.selectedSources.push(s);
+          if (!State.selectedSources.includes(s)) State.selectedSources.push(s);
         } else {
-            State.selectedSources = State.selectedSources.filter(x => x !== s);
+          State.selectedSources = State.selectedSources.filter(x => x !== s);
         }
-        Render.sources(sources, State.selectedSources);
+        Render.sources(sources, State.selectedSources, timestamps);
       });
       ul.appendChild(li);
     });
@@ -976,7 +1169,7 @@ const Render = {
     document.getElementById('citations-panel').classList.add('hidden');
   },
 
-  appendMessage(role, text, isError = false) {
+  appendMessage(role, text, isError = false, isHistorical = false) {
     const area = document.getElementById('messages-area');
     const empty = area.querySelector('#empty-state');
     if (empty) empty.remove();
@@ -990,12 +1183,29 @@ const Render = {
 
     const bubble = document.createElement('div');
     bubble.className = 'msg-bubble';
-    if (text) bubble.textContent = text;
+
+    if (text) {
+      if (isHistorical && role === 'assistant') {
+        try {
+          bubble.innerHTML = renderMarkdown(text);
+          bubble.classList.add('rendered');
+        } catch { bubble.textContent = text; }
+        // Add copy button to historical assistant messages
+        bubble.dataset.raw = text;
+        const copyBtn = _makeCopyBtn(text);
+        wrap.appendChild(roleEl);
+        wrap.appendChild(bubble);
+        wrap.appendChild(copyBtn);
+        area.appendChild(wrap);
+        return bubble;
+      } else {
+        bubble.textContent = text;
+      }
+    }
 
     wrap.appendChild(roleEl);
     wrap.appendChild(bubble);
     area.appendChild(wrap);
-    area.scrollTop = area.scrollHeight;
     return bubble;
   },
 
@@ -1222,8 +1432,8 @@ async function streamChat(nbId, message) {
             reasoningBlock.querySelector('summary').textContent = 'View reasoning';
           }
           fullText += evt.content;
-          bubble.textContent = fullText;
-          bubble.appendChild(cursor);
+          // Append only the delta — avoids full DOM replacement on every token
+          bubble.insertBefore(document.createTextNode(evt.content), cursor);
           scheduleScroll();
 
         } else if (evt.type === 'done') {
@@ -1236,6 +1446,9 @@ async function streamChat(nbId, message) {
               bubble.textContent = fullText; // fallback
               console.error('renderMarkdown failed:', mdErr);
             }
+            // Add copy button to the message wrapper
+            const copyBtn = _makeCopyBtn(fullText);
+            bubble.closest('.msg').appendChild(copyBtn);
           }
           area.scrollTop = area.scrollHeight;
           Render.updateCitations(evt.citations || []);
@@ -1293,9 +1506,9 @@ const Actions = {
   },
 
   async selectNotebook(nbId, nbName) {
-    State.activeNbId    = nbId;
-    State.activeNbName  = nbName;
-    State.history       = [];
+    State.activeNbId      = nbId;
+    State.activeNbName    = nbName;
+    State.history         = [];
     State.selectedSources = [];
 
     Render.notebookTitle(nbName);
@@ -1304,21 +1517,40 @@ const Actions = {
     try {
       const nbs = await API.getNotebooks();
       Render.notebooks(nbs, nbId);
-      
+
       const nb = nbs.find(n => n.id === nbId);
       State.activeNbCat = nb ? nb.equipment_category : null;
 
-      const [srcData, stats] = await Promise.all([
+      // Load custom prompt into settings textarea
+      const ta = document.getElementById('custom-prompt-ta');
+      if (ta) ta.value = nb ? (nb.custom_prompt || '') : '';
+
+      const [srcData, stats, history] = await Promise.all([
         API.getSources(nbId),
         API.getStats(nbId),
+        API.getHistory(nbId).catch(() => []),
       ]);
-      
+
       // Select all sources by default
       State.selectedSources = [...srcData.sources];
       if (State.activeNbCat) State.selectedSources.push('core');
-      
-      Render.sources(srcData.sources, State.selectedSources);
+
+      Render.sources(srcData.sources, State.selectedSources, srcData.timestamps || {});
       Render.stats(stats);
+
+      // Replay persisted chat history into the UI
+      if (history.length) {
+        const area = document.getElementById('messages-area');
+        const empty = area.querySelector('#empty-state');
+        if (empty) empty.remove();
+        for (const turn of history) {
+          Render.appendMessage('user', turn.role_user, false, true);
+          Render.appendMessage('assistant', turn.role_assistant, false, true);
+          State.history.push({role: 'user',      content: turn.role_user});
+          State.history.push({role: 'assistant', content: turn.role_assistant});
+        }
+        area.scrollTop = area.scrollHeight;
+      }
     } catch (e) {
       Toast.show(`Failed to load notebook: ${e.message}`, 'error');
     }
@@ -1400,7 +1632,7 @@ const Actions = {
           if (!State.selectedSources.includes(s)) State.selectedSources.push(s);
       }
       
-      Render.sources(srcData.sources, State.selectedSources);
+      Render.sources(srcData.sources, State.selectedSources, srcData.timestamps || {});
       Render.stats(stats);
     } catch(e) { /* non-fatal */ }
   },
@@ -1408,22 +1640,22 @@ const Actions = {
   async removeSource() {
     const toRemove = State.selectedSources.filter(s => s !== 'core');
     if (!State.activeNbId || toRemove.length === 0) return;
-    
+
     if (!confirm(`Remove ${toRemove.length} source(s) from this notebook?\n\nThis cannot be undone.`)) return;
     try {
       for (const name of toRemove) {
-          await API.removeSource(State.activeNbId, name);
+        await API.removeSource(State.activeNbId, name);
       }
-      
+
       const [srcData, stats] = await Promise.all([
         API.getSources(State.activeNbId),
         API.getStats(State.activeNbId),
       ]);
-      
+
       State.selectedSources = [...srcData.sources];
       if (State.activeNbCat) State.selectedSources.push('core');
-      
-      Render.sources(srcData.sources, State.selectedSources);
+
+      Render.sources(srcData.sources, State.selectedSources, srcData.timestamps || {});
       Render.stats(stats);
       Toast.show(`Removed "${name}"`, 'success');
     } catch (e) { Toast.show(e.message, 'error'); }
@@ -1459,6 +1691,89 @@ const Actions = {
     input.value = '';
     autoResizeTextarea(input);
     await streamChat(State.activeNbId, message);
+  },
+
+  exportChat() {
+    if (!State.history.length) { Toast.show('No conversation to export', 'error'); return; }
+    const lines = [`# ManualIQ Chat Export — ${State.activeNbName || 'Notebook'}`,
+                   `Date: ${new Date().toLocaleString()}`, ''];
+    for (let i = 0; i < State.history.length; i += 2) {
+      const q = State.history[i];
+      const a = State.history[i + 1];
+      if (q) lines.push(`**Q:** ${q.content}`, '');
+      if (a) lines.push(`**A:** ${a.content}`, '', '---', '');
+    }
+    const blob = new Blob([lines.join('\n')], {type: 'text/markdown'});
+    const url  = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href     = url;
+    link.download = `chat-${(State.activeNbName || 'export').replace(/\s+/g, '_')}.md`;
+    link.click();
+    URL.revokeObjectURL(url);
+  },
+
+  async clearHistory() {
+    if (!State.activeNbId) return;
+    if (!confirm('Clear all chat history for this notebook?\n\nThis cannot be undone.')) return;
+    try {
+      await API.clearHistory(State.activeNbId);
+      State.history = [];
+      Render.clearMessages();
+      Toast.show('Chat history cleared', 'success');
+    } catch (e) { Toast.show(e.message, 'error'); }
+  },
+
+  toggleSettings() {
+    const panel    = document.getElementById('nb-settings-panel');
+    const chevron  = document.getElementById('settings-chevron');
+    const isOpen   = panel.classList.toggle('open');
+    chevron.textContent = isOpen ? '▴' : '▾';
+    if (isOpen) document.getElementById('custom-prompt-ta').focus();
+  },
+
+  async saveCustomPrompt() {
+    if (!State.activeNbId) return;
+    const ta  = document.getElementById('custom-prompt-ta');
+    const val = ta ? ta.value.trim() : '';
+    try {
+      await API.updateNotebook(State.activeNbId, {custom_prompt: val});
+      Toast.show('Instructions saved', 'success');
+    } catch (e) { Toast.show(`Save failed: ${e.message}`, 'error'); }
+  },
+
+  toggleIntel() {
+    const panel   = document.getElementById('nb-intel-panel');
+    const chevron = document.getElementById('intel-chevron');
+    const isOpen  = panel.classList.toggle('open');
+    chevron.textContent = isOpen ? '▴' : '▾';
+    if (isOpen && State.activeNbId) this._refreshMemory();
+  },
+
+  async _refreshMemory() {
+    if (!State.activeNbId) return;
+    try {
+      const data = await API.getMemory(State.activeNbId);
+      const el = document.getElementById('nb-memory-text');
+      el.textContent = data.memory || '(No memory yet — ask 20 questions to generate)';
+    } catch { /* non-fatal */ }
+  },
+
+  async regenMemory() {
+    if (!State.activeNbId) return;
+    const btn = document.getElementById('regen-memory-btn');
+    btn.disabled = true;
+    btn.textContent = '↺ Regenerating…';
+    try {
+      await API.regenerateMemory(State.activeNbId);
+      Toast.show('Memory regeneration started (runs in background)', 'success');
+      // Poll once after 8s to show result
+      setTimeout(() => { if (State.activeNbId) Actions._refreshMemory(); }, 8000);
+    } catch (e) {
+      Toast.show(`Regen failed: ${e.message}`, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '↺ Regenerate';
+    }
   },
 };
 
@@ -1517,6 +1832,18 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('citations-panel').classList.add('hidden');
     document.getElementById('citations-list').innerHTML = '';
   });
+
+  document.getElementById('export-btn').addEventListener('click',
+    () => Actions.exportChat());
+
+  document.getElementById('clear-history-btn').addEventListener('click',
+    () => Actions.clearHistory());
+
+  document.getElementById('regen-memory-btn').addEventListener('click',
+    () => Actions.regenMemory());
+
+  document.getElementById('custom-prompt-ta').addEventListener('blur',
+    () => Actions.saveCustomPrompt());
 
   document.getElementById('send-btn').addEventListener('click',
     () => Actions.sendMessage());

@@ -289,6 +289,8 @@ def build_prompt(
     history: list[tuple[str, str]],
     sources: list[str],
     history_turns: int,
+    custom_prompt: str = "",
+    notebook_memory: str = "",
 ) -> str:
     chunk_blocks: list[str] = []
     for i, chunk in enumerate(contexts, start=1):
@@ -310,8 +312,16 @@ def build_prompt(
     source_list = ", ".join(sources) if sources else "none"
     joined_chunks = "\n\n".join(chunk_blocks)
 
+    # Optional blocks prepended to system prompt
+    prefix_blocks: list[str] = []
+    if custom_prompt:
+        prefix_blocks.append(f"USER INSTRUCTIONS:\n{custom_prompt}")
+    if notebook_memory:
+        prefix_blocks.append(f"NOTEBOOK INTELLIGENCE:\n{notebook_memory}")
+    prefix = ("\n\n".join(prefix_blocks) + "\n\n") if prefix_blocks else ""
+
     return (
-        f"{_SYSTEM_PROMPT}\n\n"
+        f"{prefix}{_SYSTEM_PROMPT}\n\n"
         f"Sources searched: {source_list}\n\n"
         f"CONTEXT:\n{joined_chunks}\n\n"
         f"CONVERSATION HISTORY (last {history_turns} turns):\n{history_block}\n\n"
@@ -439,6 +449,7 @@ def retrieve(
     nb_proc_dir: Path,
     selected_sources: list[str] | None = None,
     core_category: str = "",
+    top_k_override: int | None = None,
 ) -> list[dict[str, Any]]:
     from query import retrieve_hybrid, retrieve_vector, retrieve_vectorless
 
@@ -446,7 +457,7 @@ def retrieve(
     table_name = cfg["paths"]["lancedb_table"]
     chunks_path = nb_chunks_path(nb_proc_dir.parent, nb_id)
     embedding_model = cfg["models"]["embedding"]
-    top_k = int(cfg["retrieval"]["top_k"])
+    top_k = top_k_override if top_k_override is not None else int(cfg["retrieval"]["top_k"])
 
     if retrieval_mode == "vector":
         return retrieve_vector(question, db_dir, table_name, top_k, embedding_model, nb_id, selected_sources, core_category)

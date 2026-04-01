@@ -11,6 +11,7 @@ or:
 from __future__ import annotations
 
 import asyncio
+import datetime
 import json
 import shutil
 import subprocess
@@ -34,6 +35,12 @@ sys.path.insert(0, str(Path(__file__).parent))
 from common import load_config, resolve_path
 from ingest import ingest_file
 from index import index_markdown
+from notebook_map import (
+    get_boost_table,
+    get_memory,
+    regenerate_memory,
+    update_map,
+)
 
 # ── Import all helpers from app.py (no duplication) ────────────────────────
 from app import (
@@ -63,6 +70,8 @@ _cfg: dict[str, Any] = {}
 _raw_dir: Path = Path("data/raw")
 _processed_dir: Path = Path("data/processed")
 _registry_path: Path = Path("data/notebooks.json")
+_chats_dir: Path = Path("data/chats")
+_maps_dir: Path = Path("data/maps")
 _reasoning_model: str = "deepseek-r1:8b"
 _retrieval_mode: str = "hybrid"
 _history_turns: int = 6
@@ -70,6 +79,59 @@ _show_thinking: bool = False
 _runtime: dict[str, Any] = {}
 _ollama_client: Any = None
 _lock = threading.Lock()
+
+
+def _balance_sources(contexts: list[dict[str, Any]], top_k: int) -> list[dict[str, Any]]:
+    """
+    Guarantee at least 1 chunk per unique source in the final top_k result.
+    Works on the already-ranked list (position = quality) so it is
+    score-direction-agnostic.
+    """
+    if top_k <= 0 or not contexts:
+        return contexts[:top_k]
+
+    # Map each source to its best-ranked (lowest index) chunk
+    guaranteed: list[dict[str, Any]] = []
+    guaranteed_ids: set[str] = set()
+    seen_sources: set[str] = set()
+
+    for ctx in contexts:
+        src = ctx.get("source", "")
+        cid = str(ctx.get("id", id(ctx)))
+        if src and src not in seen_sources:
+            seen_sources.add(src)
+            guaranteed.append(ctx)
+            guaranteed_ids.add(cid)
+            if len(guaranteed) >= top_k:
+                break
+
+    # Fill remaining budget with best-ranked non-guaranteed chunks
+    remaining = [c for c in contexts if str(c.get("id", id(c))) not in guaranteed_ids]
+    combined  = guaranteed + remaining
+    return combined[:top_k]
+
+
+def _chat_path(nb_id: str) -> Path:
+    return _chats_dir / f"{nb_id}.jsonl"
+
+
+def _timestamps_path(nb_id: str) -> Path:
+    return _processed_dir / nb_id / ".ingest_timestamps.json"
+
+
+def _persist_chat_turn(nb_id: str, question: str, answer: str, citations: list[dict]) -> None:
+    """Append a chat turn to the per-notebook JSONL history file (thread-safe)."""
+    chat_path = _chat_path(nb_id)
+    chat_path.parent.mkdir(parents=True, exist_ok=True)
+    turn = {
+        "ts": datetime.datetime.utcnow().isoformat() + "Z",
+        "role_user": question,
+        "role_assistant": answer,
+        "citations": citations,
+    }
+    with _lock:
+        with chat_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(turn, ensure_ascii=False) + "\n")
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -157,7 +219,7 @@ app = FastAPI(title="ManualIQ", docs_url=None, redoc_url=None)
 
 @app.on_event("startup")
 async def _startup() -> None:
-    global _cfg, _raw_dir, _processed_dir, _registry_path
+    global _cfg, _raw_dir, _processed_dir, _registry_path, _chats_dir, _maps_dir
     global _reasoning_model, _retrieval_mode, _history_turns, _runtime, _ollama_client
 
     _cfg = load_config()
@@ -165,6 +227,8 @@ async def _startup() -> None:
     _raw_dir = resolve_path(paths["raw_dir"])
     _processed_dir = resolve_path(paths["processed_dir"])
     _registry_path = resolve_path(paths.get("notebooks_registry", "data/notebooks.json"))
+    _chats_dir = resolve_path(paths.get("chats_dir", "data/chats"))
+    _maps_dir = resolve_path(paths.get("maps_dir", "data/maps"))
     _reasoning_model = _cfg["models"]["reasoning"]
     _retrieval_mode = _cfg["retrieval"]["mode"]
     _history_turns = int(_cfg.get("chat", {}).get("history_turns", 6))
@@ -172,6 +236,8 @@ async def _startup() -> None:
 
     _raw_dir.mkdir(parents=True, exist_ok=True)
     _processed_dir.mkdir(parents=True, exist_ok=True)
+    _chats_dir.mkdir(parents=True, exist_ok=True)
+    _maps_dir.mkdir(parents=True, exist_ok=True)
 
     from ollama import Client
     _ollama_client = Client(host="http://127.0.0.1:11434")
@@ -214,6 +280,10 @@ async def serve_spa() -> HTMLResponse:
 class CreateNotebookRequest(BaseModel):
     name: str
     equipment_category: str = ""
+
+
+class UpdateNotebookRequest(BaseModel):
+    custom_prompt: str = ""
 
 
 class ChatRequest(BaseModel):
@@ -271,16 +341,84 @@ async def create_nb(req: CreateNotebookRequest) -> dict[str, Any]:
 
 
 @app.get("/api/notebooks/{nb_id}/sources")
-async def list_sources(nb_id: str) -> dict[str, list[str]]:
+async def list_sources(nb_id: str) -> dict[str, Any]:
     _require_notebook(nb_id)
     proc = nb_processed_dir(_processed_dir, nb_id)
-    return {"sources": get_nb_sources(proc)}
+    sources = get_nb_sources(proc)
+    ts_path = _timestamps_path(nb_id)
+    timestamps: dict[str, str] = {}
+    if ts_path.exists():
+        try:
+            timestamps = json.loads(ts_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {"sources": sources, "timestamps": timestamps}
 
 
 @app.get("/api/notebooks/{nb_id}/stats")
 async def nb_stats(nb_id: str) -> dict[str, int]:
     _require_notebook(nb_id)
     return _nb_stats(nb_id)
+
+
+@app.get("/api/notebooks/{nb_id}/history")
+async def get_history(nb_id: str) -> list[dict[str, Any]]:
+    _require_notebook(nb_id)
+    chat_path = _chat_path(nb_id)
+    if not chat_path.exists():
+        return []
+    turns: list[dict[str, Any]] = []
+    with chat_path.open(encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                try:
+                    turns.append(json.loads(line))
+                except Exception:
+                    pass
+    return turns[-100:]  # cap at last 100 turns
+
+
+@app.delete("/api/notebooks/{nb_id}/history")
+async def clear_history(nb_id: str) -> dict[str, str]:
+    _require_notebook(nb_id)
+    chat_path = _chat_path(nb_id)
+    with _lock:
+        chat_path.write_text("", encoding="utf-8")
+    return {"status": "cleared"}
+
+
+@app.get("/api/notebooks/{nb_id}/memory")
+async def get_nb_memory(nb_id: str) -> dict[str, str]:
+    _require_notebook(nb_id)
+    return {"memory": get_memory(_maps_dir, nb_id)}
+
+
+@app.post("/api/notebooks/{nb_id}/memory/regenerate", status_code=202)
+async def regen_nb_memory(nb_id: str) -> dict[str, str]:
+    _require_notebook(nb_id)
+    loop = asyncio.get_running_loop()
+
+    def _regen() -> None:
+        try:
+            regenerate_memory(_maps_dir, nb_id, _ollama_client, _reasoning_model)
+        except Exception as exc:
+            print(f"[ManualIQ] Memory regen failed for {nb_id}: {exc}")
+
+    loop.run_in_executor(None, _regen)
+    return {"status": "regenerating"}
+
+
+@app.patch("/api/notebooks/{nb_id}")
+async def update_notebook(nb_id: str, req: UpdateNotebookRequest) -> dict[str, Any]:
+    nbs = load_notebooks(_registry_path)
+    nb = find_notebook_by_id(nbs, nb_id)
+    if not nb:
+        raise HTTPException(404, f"Notebook '{nb_id}' not found")
+    nb["custom_prompt"] = req.custom_prompt.strip()
+    from app import save_notebooks as _save_nbs
+    _save_nbs(nbs, _registry_path)
+    return nb
 
 
 # ---------------------------------------------------------------------------
@@ -399,6 +537,17 @@ async def _ingest_generator(nb_id: str, file: UploadFile) -> AsyncGenerator[str,
     except Exception as exc:
         yield _sse({"type": "error", "content": f"Indexing failed: {exc}"})
         return
+
+    # Write ingest timestamp sidecar
+    ts_path = _timestamps_path(nb_id)
+    timestamps: dict[str, str] = {}
+    if ts_path.exists():
+        try:
+            timestamps = json.loads(ts_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    timestamps[md_path.name] = datetime.datetime.utcnow().isoformat() + "Z"
+    ts_path.write_text(json.dumps(timestamps, indent=2, ensure_ascii=False), encoding="utf-8")
 
     yield _sse({"type": "done", "source": md_path.name, "chunks": n})
 
@@ -571,7 +720,9 @@ async def _chat_generator(req: ChatRequest) -> AsyncGenerator[str, None]:
 
     proc = nb_processed_dir(_processed_dir, nb_id)
     nb = _require_notebook(nb_id)
-    core_category = nb.get("equipment_category", "")
+    core_category   = nb.get("equipment_category", "")
+    custom_prompt   = nb.get("custom_prompt", "")
+    notebook_memory = get_memory(_maps_dir, nb_id)
 
     # Build retrieval query enriched with recent user turns
     prior_qs = " ".join(
@@ -581,10 +732,13 @@ async def _chat_generator(req: ChatRequest) -> AsyncGenerator[str, None]:
     retrieval_query = _expand_query(f"{prior_qs} {message}".strip() if prior_qs else message)
 
     loop = asyncio.get_running_loop()
+    _top_k = int(_cfg["retrieval"]["top_k"])
 
     try:
+        # Fetch 2× pool for load balancing, then trim to top_k after balancing
         contexts = await loop.run_in_executor(
-            None, retrieve, retrieval_query, _cfg, _retrieval_mode, nb_id, proc, selected_sources, core_category
+            None, retrieve, retrieval_query, _cfg, _retrieval_mode, nb_id, proc,
+            selected_sources, core_category, _top_k * 2
         )
     except Exception as exc:
         yield _sse({"type": "error", "content": f"Retrieval error: {exc}"})
@@ -595,6 +749,22 @@ async def _chat_generator(req: ChatRequest) -> AsyncGenerator[str, None]:
         yield _sse({"type": "done", "citations": []})
         return
 
+    # Load balance: guarantee ≥1 chunk per source, then trim to top_k
+    if _cfg.get("retrieval", {}).get("load_balance", True):
+        contexts = _balance_sources(contexts, _top_k)
+
+    # Apply learned relevance boost — rank-based nudge (direction-agnostic)
+    boost_table = get_boost_table(_maps_dir, nb_id)
+    if boost_table and len(contexts) > 1:
+        for i, ctx in enumerate(contexts):
+            key = ctx.get("source", "unknown") + "::" + ctx.get("section_path", "")
+            boost = boost_table.get(key, 1.0)
+            # Effective rank: lower = better. Divide by boost so cited chunks rank higher.
+            ctx["_adj_rank"] = (i + 1) / boost
+        contexts.sort(key=lambda x: x["_adj_rank"])
+        for ctx in contexts:
+            ctx.pop("_adj_rank", None)
+
     # Convert [{role,content}] history to [(q, a)] tuples for build_prompt
     hist_tuples: list[tuple[str, str]] = []
     it = iter(req.history)
@@ -604,7 +774,7 @@ async def _chat_generator(req: ChatRequest) -> AsyncGenerator[str, None]:
             if nxt and nxt.get("role") == "assistant":
                 hist_tuples.append((msg["content"], nxt["content"]))
 
-    prompt = build_prompt(message, contexts, hist_tuples, selected_sources, _history_turns)
+    prompt = build_prompt(message, contexts, hist_tuples, selected_sources, _history_turns, custom_prompt, notebook_memory)
 
     citations = [
         {
@@ -653,6 +823,7 @@ async def _chat_generator(req: ChatRequest) -> AsyncGenerator[str, None]:
 
     threading.Thread(target=_stream_ollama, daemon=True).start()
 
+    full_answer = ""
     while True:
         token = await q.get()
         if token is None:
@@ -666,9 +837,24 @@ async def _chat_generator(req: ChatRequest) -> AsyncGenerator[str, None]:
         if token.startswith("\x02"):
             yield _sse({"type": "thinking_token", "content": token[1:]})
             continue
+        full_answer += token
         yield _sse({"type": "token", "content": token})
 
     yield _sse({"type": "done", "citations": citations})
+
+    # Persist chat turn + update query map after streaming completes (non-blocking)
+    if full_answer:
+        def _post_stream_tasks() -> None:
+            _persist_chat_turn(nb_id, message, full_answer, citations)
+            total = update_map(_maps_dir, nb_id, message, citations, _retrieval_mode)
+            # Regenerate memory summary every 20 queries
+            if total > 0 and total % 20 == 0:
+                try:
+                    regenerate_memory(_maps_dir, nb_id, _ollama_client, _reasoning_model)
+                except Exception as exc:
+                    print(f"[ManualIQ] Memory regen failed for {nb_id}: {exc}")
+
+        threading.Thread(target=_post_stream_tasks, daemon=True).start()
 
 
 # ---------------------------------------------------------------------------
