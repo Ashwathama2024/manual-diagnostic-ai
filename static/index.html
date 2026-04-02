@@ -723,6 +723,22 @@ body {
   margin-top: 4px;
   line-height: 1.4;
 }
+.settings-label {
+  font-size: 0.72rem;
+  color: var(--text);
+  font-weight: 600;
+  margin: 10px 0 4px;
+}
+#core-books-list { display: flex; flex-direction: column; gap: 4px; }
+#core-books-list label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: var(--text);
+  cursor: pointer;
+}
+#core-books-list input[type=checkbox] { accent-color: var(--accent); cursor: pointer; }
 
 /* Intelligence panel — reuses settings-panel structure */
 #nb-intel-toggle {
@@ -811,6 +827,9 @@ body {
         placeholder="Custom instructions for this notebook… e.g. 'Always respond in metric units' or 'Focus on troubleshooting procedures'"
         rows="3"></textarea>
       <div class="settings-hint">Saved automatically · Prepended to every prompt in this notebook</div>
+      <div class="settings-label">Core Knowledge Books</div>
+      <div id="core-books-list"><span class="settings-hint">Open a notebook to see available books</span></div>
+      <div class="settings-hint">Check all = use full category · Uncheck to exclude a book from retrieval</div>
     </div>
 
     <!-- Notebook Intelligence panel -->
@@ -912,9 +931,10 @@ const NbDropdown = {
 
 /* ── State ────────────────────────────────────────────────── */
 const State = {
-  activeNbId:     null,
-  activeNbName:   null,
-  activeNbCat:    null,
+  activeNbId:      null,
+  activeNbName:    null,
+  activeNbCat:     null,
+  nbCoreBooks:     [],   // saved core_books for active notebook; [] = all (no filter)
   selectedSources: [],
   history:        [],     // [{role, content}]
   streaming:      false,
@@ -964,6 +984,7 @@ const API = {
 
   getHistory(nbId)     { return this._json(`/api/notebooks/${nbId}/history`); },
   clearHistory(nbId)   { return this._json(`/api/notebooks/${nbId}/history`, {method:'DELETE'}); },
+  getCoreBooks(cat)    { return this._json(`/api/core_books?category=${encodeURIComponent(cat||'')}`); },
   updateNotebook(nbId, data) {
     return this._json(`/api/notebooks/${nbId}`, {
       method: 'PATCH',
@@ -1519,11 +1540,15 @@ const Actions = {
       Render.notebooks(nbs, nbId);
 
       const nb = nbs.find(n => n.id === nbId);
-      State.activeNbCat = nb ? nb.equipment_category : null;
+      State.activeNbCat    = nb ? nb.equipment_category : null;
+      State.nbCoreBooks    = nb ? (nb.core_books || []) : [];
 
       // Load custom prompt into settings textarea
       const ta = document.getElementById('custom-prompt-ta');
       if (ta) ta.value = nb ? (nb.custom_prompt || '') : '';
+
+      // Pre-populate core books checkboxes (non-blocking)
+      if (State.activeNbCat) Actions._refreshCoreBooks();
 
       const [srcData, stats, history] = await Promise.all([
         API.getSources(nbId),
@@ -1724,22 +1749,67 @@ const Actions = {
   },
 
   toggleSettings() {
-    const panel    = document.getElementById('nb-settings-panel');
-    const chevron  = document.getElementById('settings-chevron');
-    const isOpen   = panel.classList.toggle('open');
+    const panel   = document.getElementById('nb-settings-panel');
+    const chevron = document.getElementById('settings-chevron');
+    const isOpen  = panel.classList.toggle('open');
     chevron.textContent = isOpen ? '▴' : '▾';
-    if (isOpen) document.getElementById('custom-prompt-ta').focus();
+    if (isOpen) {
+      document.getElementById('custom-prompt-ta').focus();
+      if (State.activeNbCat) this._refreshCoreBooks();
+    }
   },
 
-  async saveCustomPrompt() {
-    if (!State.activeNbId) return;
-    const ta  = document.getElementById('custom-prompt-ta');
-    const val = ta ? ta.value.trim() : '';
+  async _refreshCoreBooks() {
+    const container = document.getElementById('core-books-list');
+    if (!container || !State.activeNbCat) return;
     try {
-      await API.updateNotebook(State.activeNbId, {custom_prompt: val});
-      Toast.show('Instructions saved', 'success');
+      const data  = await API.getCoreBooks(State.activeNbCat);
+      const books = data.books || [];
+      const saved = State.nbCoreBooks || [];           // [] = all checked (no filter)
+      const allChecked = saved.length === 0;
+
+      container.innerHTML = '';
+      if (!books.length) {
+        container.innerHTML = '<span class="settings-hint">No core books found for this category</span>';
+        return;
+      }
+      books.forEach(book => {
+        const label = document.createElement('label');
+        const cb    = document.createElement('input');
+        cb.type    = 'checkbox';
+        cb.value   = book;
+        cb.checked = allChecked || saved.includes(book);
+        cb.addEventListener('change', () => Actions.saveNotebookSettings());
+        const span = document.createElement('span');
+        span.textContent = book.replace(/_/g, ' ');
+        label.appendChild(cb);
+        label.appendChild(span);
+        container.appendChild(label);
+      });
+    } catch (e) {
+      container.innerHTML = '<span class="settings-hint">Could not load core books</span>';
+    }
+  },
+
+  async saveNotebookSettings() {
+    if (!State.activeNbId) return;
+    const ta   = document.getElementById('custom-prompt-ta');
+    const val  = ta ? ta.value.trim() : '';
+    // Collect checked core books; if all checked → send [] (= no filter, category-wide)
+    const cbs      = [...document.querySelectorAll('#core-books-list input[type=checkbox]')];
+    const checked  = cbs.filter(c => c.checked).map(c => c.value);
+    const allBoxes = cbs.map(c => c.value);
+    // [] means "all" — only send a list when it's a strict subset
+    const core_books = (checked.length === allBoxes.length) ? [] : checked;
+    State.nbCoreBooks = core_books;
+    try {
+      await API.updateNotebook(State.activeNbId, {custom_prompt: val, core_books});
+      Toast.show('Settings saved', 'success');
     } catch (e) { Toast.show(`Save failed: ${e.message}`, 'error'); }
   },
+
+  // Keep old name as alias so existing blur handler still works
+  async saveCustomPrompt() { return this.saveNotebookSettings(); },
 
   toggleIntel() {
     const panel   = document.getElementById('nb-intel-panel');

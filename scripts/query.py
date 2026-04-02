@@ -111,6 +111,7 @@ def retrieve_vector(
     notebook_id: str = "",
     selected_sources: list[str] | None = None,
     core_category: str = "",
+    core_books: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     if _db_conn is not None and _embedder is not None:
         db = _db_conn
@@ -156,12 +157,19 @@ def retrieve_vector(
     # 2. Query Core Knowledge Table
     if "core_knowledge" in existing_tables and "core" in selected_sources:
         core_table = db.open_table("core_knowledge")
-        has_cat_col = "equipment_category" in core_table.schema.names
+        has_cat_col  = "equipment_category" in core_table.schema.names
+        has_book_col = "core_book"          in core_table.schema.names
 
         query = core_table.search(q_vec).limit(top_k)
         if core_category and has_cat_col:
             safe_cat = core_category.replace("'", "''")
             query = query.where(f"equipment_category = '{safe_cat}'")
+        # Semantic book filter: restrict to the user-selected core books for this notebook
+        if core_books and has_book_col:
+            in_clause = ", ".join(
+                f"'{b.replace(chr(39), chr(39)+chr(39))}'" for b in core_books
+            )
+            query = query.where(f"core_book IN ({in_clause})")
             
         core_res = query.to_list()
         for row in core_res:
@@ -237,6 +245,7 @@ def retrieve_vectorless(
     notebook_id: str = "",
     selected_sources: list[str] | None = None,
     core_category: str = "",
+    core_books: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     selected_sources = selected_sources or []
     nb_sources = [s for s in selected_sources if s != "core"]
@@ -266,6 +275,9 @@ def retrieve_vectorless(
                     _rows = _ct.search().where(f"equipment_category = '{safe_cat}'").limit(top_k * 4).to_list()
                 else:
                     _rows = _ct.search().limit(top_k * 4).to_list()
+                # Semantic book filter: keep only requested core books when set
+                if core_books:
+                    _rows = [r for r in _rows if r.get("core_book", "") in core_books]
                 for row in _rows:
                     row["provenance"] = "Core Knowledge"
                 all_chunks.extend(_rows)
@@ -311,6 +323,7 @@ def retrieve_hybrid(
     notebook_id: str = "",
     selected_sources: list[str] | None = None,
     core_category: str = "",
+    core_books: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Hybrid retrieval using Reciprocal Rank Fusion (RRF).
@@ -324,11 +337,12 @@ def retrieve_hybrid(
     _RRF_K = 60
 
     lexical = retrieve_vectorless(
-        question, chunks_path, top_k * 2, notebook_id, selected_sources, core_category
+        question, chunks_path, top_k * 2, notebook_id, selected_sources, core_category,
+        core_books
     )
     vector = retrieve_vector(
         question, db_dir, table_name, top_k * 2, embedding_model,
-        notebook_id, selected_sources, core_category
+        notebook_id, selected_sources, core_category, core_books
     )
 
     rrf_scores: dict[str, float] = {}

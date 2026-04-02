@@ -296,6 +296,7 @@ class CreateNotebookRequest(BaseModel):
 
 class UpdateNotebookRequest(BaseModel):
     custom_prompt: str = ""
+    core_books: list[str] = []  # semantic book filter; empty = category-wide (no filter)
 
 
 class ChatRequest(BaseModel):
@@ -428,9 +429,39 @@ async def update_notebook(nb_id: str, req: UpdateNotebookRequest) -> dict[str, A
     if not nb:
         raise HTTPException(404, f"Notebook '{nb_id}' not found")
     nb["custom_prompt"] = req.custom_prompt.strip()
+    nb["core_books"]    = req.core_books          # [] = no filter (category-wide)
     from app import save_notebooks as _save_nbs
     _save_nbs(nbs, _registry_path)
     return nb
+
+
+# ---------------------------------------------------------------------------
+# Core-books discovery endpoint
+# ---------------------------------------------------------------------------
+@app.get("/api/core_books")
+async def list_core_books(category: str = "") -> dict[str, list[str]]:
+    """
+    Return the distinct core_book values present in the core_knowledge table,
+    optionally filtered to a given equipment_category.
+    Used by the settings panel to populate the semantic-group checkboxes.
+    """
+    try:
+        import lancedb as _ldb
+        _db = _ldb.connect(str(resolve_path(_cfg["paths"]["lancedb_dir"])))
+        if "core_knowledge" not in _db.list_tables().tables:
+            return {"books": []}
+        tbl = _db.open_table("core_knowledge")
+        has_book_col = "core_book" in tbl.schema.names
+        has_cat_col  = "equipment_category" in tbl.schema.names
+        if not has_book_col:
+            return {"books": []}
+        rows = tbl.search().select(["core_book", "equipment_category"]).limit(5000).to_list()
+        if category and has_cat_col:
+            rows = [r for r in rows if r.get("equipment_category", "") == category]
+        books = sorted({r.get("core_book", "") for r in rows if r.get("core_book", "")})
+        return {"books": books}
+    except Exception as exc:
+        raise HTTPException(500, f"core_books lookup failed: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -735,6 +766,7 @@ async def _chat_generator(req: ChatRequest) -> AsyncGenerator[str, None]:
     proc = nb_processed_dir(_processed_dir, nb_id)
     nb = _require_notebook(nb_id)
     core_category   = nb.get("equipment_category", "")
+    core_books      = nb.get("core_books") or []   # [] = no filter (category-wide)
     custom_prompt   = nb.get("custom_prompt", "")
     notebook_memory = get_memory(_maps_dir, nb_id)
 
@@ -752,7 +784,7 @@ async def _chat_generator(req: ChatRequest) -> AsyncGenerator[str, None]:
         # Fetch 2× pool for load balancing, then trim to top_k after balancing
         contexts = await loop.run_in_executor(
             None, retrieve, retrieval_query, _cfg, _retrieval_mode, nb_id, proc,
-            selected_sources, core_category, _top_k * 2
+            selected_sources, core_category, _top_k * 2, core_books or None
         )
     except Exception as exc:
         yield _sse({"type": "error", "content": f"Retrieval error: {exc}"})

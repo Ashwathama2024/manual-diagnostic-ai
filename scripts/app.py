@@ -453,6 +453,7 @@ def retrieve(
     selected_sources: list[str] | None = None,
     core_category: str = "",
     top_k_override: int | None = None,
+    core_books: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     from query import retrieve_hybrid, retrieve_vector, retrieve_vectorless
 
@@ -463,11 +464,11 @@ def retrieve(
     top_k = top_k_override if top_k_override is not None else int(cfg["retrieval"]["top_k"])
 
     if retrieval_mode == "vector":
-        return retrieve_vector(question, db_dir, table_name, top_k, embedding_model, nb_id, selected_sources, core_category)
+        return retrieve_vector(question, db_dir, table_name, top_k, embedding_model, nb_id, selected_sources, core_category, core_books)
     elif retrieval_mode == "vectorless":
-        return retrieve_vectorless(question, chunks_path, top_k, nb_id, selected_sources, core_category)
+        return retrieve_vectorless(question, chunks_path, top_k, nb_id, selected_sources, core_category, core_books)
     else:
-        return retrieve_hybrid(question, db_dir, table_name, top_k, embedding_model, chunks_path, nb_id, selected_sources, core_category)
+        return retrieve_hybrid(question, db_dir, table_name, top_k, embedding_model, chunks_path, nb_id, selected_sources, core_category, core_books)
 
 
 # ---------------------------------------------------------------------------
