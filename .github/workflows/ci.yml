@@ -27,8 +27,9 @@ jobs:
     - name: Lint with Ruff
       run: |
         # stop the build if there are Python syntax errors or undefined names
-        ruff check . --select=E9,F63,F7,F82 --show-source
-        # exit-zero treats all errors as warnings
+        # --output-format=full replaces --show-source (removed in ruff 0.6.0)
+        ruff check . --select=E9,F63,F7,F82 --output-format=full
+        # warn on all other issues but don't fail the build
         ruff check . --exit-zero
 
     - name: Test with pytest

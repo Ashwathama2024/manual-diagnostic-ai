@@ -1,7 +1,7 @@
 # ManualIQ — Competitive Gap Analysis & Product Roadmap
 
 > **Comparison baseline:** AnythingLLM v1.7.x (Mintplex Labs, March 2026)
-> **ManualIQ version:** Phase 1–2 complete (feature/phase1-2-core-knowledge branch)
+> **ManualIQ version:** Phase 3 + 3.5 complete (feature/phase3-persistence-intelligence branch)
 
 ---
 
@@ -17,10 +17,13 @@ These are genuine differentiators — features AnythingLLM either lacks entirely
 | 4 | **Fuzzy typo-tolerant lexical retrieval** | Prefix + substring matching on BM25 scorer, 4-char minimum to avoid false positives | Pure vector similarity only | "crankshft", "turbocharger" misspelling — engineers work in noisy, stressful environments |
 | 5 | **Dual knowledge hierarchy** | Core Knowledge Base (fundamental engineering theory, shared across all notebooks) + per-notebook manual sources | Flat workspace — all documents equal | Separate reusable reference library from vessel-specific manuals |
 | 6 | **Equipment category taxonomy** | 11 marine machinery categories (propulsion, fuel oil, electrical, boiler, etc.) scoped to retrieval | None — workspaces are generic | Returns only hydraulically relevant chunks for a hydraulic query, not boiler manual chunks |
-| 7 | **Hybrid retrieval with guaranteed per-source budgets** | vector + lexical combined; each source gets its own top-k budget so neither crowds out the other | Speed mode: pure vector only. Accuracy mode: vector + rerank (same pool) | Ensures core knowledge and manual both appear in context, neither silenced |
+| 7 | **Hybrid retrieval with guaranteed per-source budgets** | vector + lexical combined; load balancing ensures every source gets ≥1 chunk in context | Speed mode: pure vector only. Accuracy mode: vector + rerank (same pool) | Ensures core knowledge and manual both appear in context, neither silenced |
 | 8 | **Section-path embedding strategy** | Chunks embedded as `[H1 > H2 > H3]\ntext` — topic context baked into the vector | Raw text embedded without structural context | A chunk from "Fuel Injection System > Pressure Adjustment" retrieves correctly even for vague queries |
 | 9 | **DeepSeek reasoning transparency** | Native `think=True` streaming — collapsible "brain" panel shows the model's reasoning chain | No reasoning display — answer appears directly | Maintenance team can see WHY the system concluded a specific diagnosis; builds trust |
 | 10 | **Watchdog auto-ingest for Core Knowledge** | Drop a PDF into `core_knowledge/` folder — system detects, ingests, and embeds automatically | Live sync requires configured connectors (GitHub, Confluence, etc.) | Zero-friction knowledge base maintenance for ship's engineer |
+| 11 | **Notebook intelligence layer** | Per-notebook query map + learned relevance boost + LLM memory summary — notebook learns what it knows over time | No equivalent feature | Chunks that answer questions well rank higher on subsequent queries; notebook develops a "specialty profile" |
+| 12 | **Per-notebook custom instructions** | User-editable system prompt per notebook, auto-saved, injected into every prompt | Workspace-level prompt via admin panel only | "Always respond in metric units" or "focus on troubleshooting procedures" per equipment type |
+| 13 | **Source load balancing** | Fetch 2× candidate pool; guarantee ≥1 chunk per source before trimming to top-k | No equivalent — large docs crowd out small ones | A 20-page technical bulletin can no longer be silenced by a 500-page main engine manual |
 
 ---
 
@@ -30,12 +33,12 @@ These are features AnythingLLM ships that ManualIQ currently lacks.
 
 ### 2A — Critical Gaps (Block real-world multi-user deployment)
 
-| # | Feature | AnythingLLM | ManualIQ Gap | Priority |
+| # | Feature | AnythingLLM | ManualIQ | Priority |
 |---|---|---|---|---|
 | G1 | **Multi-user / RBAC** | Admin / Manager / User roles; per-workspace user assignment | Single-user only — no login, no roles | 🔴 High — ships carry multiple engineers; Chief Engineer needs admin rights |
 | G2 | **REST API** | Full CRUD + chat + upload API with scoped keys; Swagger docs | No external API — server.py only serves the SPA | 🔴 High — integration with ship management systems (PMS, CMMS) |
 | G3 | **Reranking** | Accuracy-optimized mode re-scores top candidates before context injection | No reranking — pure score from BM25/vector distance | 🟡 Medium — would improve answer quality on complex multi-part questions |
-| G4 | **Persistent chat history** | Chat history per workspace per user; survives browser reload | History lives in JS `State.history` — lost on page refresh | 🔴 High — engineers need to refer back to previous troubleshooting sessions |
+| G4 | **Persistent chat history** | Chat history per workspace per user; survives browser reload | ✅ **Closed (Phase 3.1 + 3.5.4)** — per-notebook JSONL; replayed on notebook select | ✅ Resolved |
 
 ### 2B — Document Formats & Connectors
 
@@ -66,7 +69,7 @@ These are features AnythingLLM ships that ManualIQ currently lacks.
 | G17 | **Multiple LLM provider support** | 30+ providers — Ollama, OpenAI, Claude, Gemini, local GGUF | Ollama only | 🟢 Low — Ollama covers the offline use case |
 | G18 | **Per-workspace LLM override** | Each workspace can use a different model | Global model only | 🟢 Low |
 | G19 | **Multiple vector DB backends** | LanceDB, Chroma, PGVector, Qdrant, Milvus, Pinecone, Weaviate | LanceDB only | 🟢 Low — LanceDB is the right choice for offline |
-| G20 | **Document versioning** | Live sync replaces (no diff); version tracking requested | No versioning | 🟡 Medium — track when manuals were updated |
+| G20 | **Document versioning** | Live sync replaces (no diff); version tracking requested | Ingest timestamp shown per source (Phase 3.4) | 🟡 Medium — track full diff history |
 | G21 | **Audit logging** | Basic admin panel logs | None | 🟡 Medium — ISM Code compliance, SMS requirements |
 
 ---
@@ -86,14 +89,17 @@ Reasoning transparency       ✅✅         ❌
 Dual knowledge hierarchy     ✅✅         ❌
 Equipment taxonomy           ✅✅         ❌
 Live knowledge watcher       ✅          ✅ (connectors)
+Persistent chat history      ✅✅         ✅✅   ← Phase 3 ✅
+Notebook intelligence        ✅✅         ❌    ← Phase 3.5 ✅
+Source load balancing        ✅✅         ❌    ← Phase 3.5 ✅
+Per-notebook instructions    ✅          ❌    ← Phase 3 ✅
 Multi-user / RBAC            ❌          ✅✅
-Persistent chat history      ❌          ✅✅
 REST API                     ❌          ✅✅
 Agent / tool use             ❌          ✅✅
 Multi-format (audio/xlsx)    ❌          ✅✅
 Web connectors               ❌          ✅✅
 Embedded widget              ❌          ✅
-Document versioning          ❌          ❌ (partial)
+Document versioning          ✅ (ts)     ❌ (partial)
 Reranking                    ❌          ✅
 SSO / SAML                   ❌          ❌ (both lack)
 ```
@@ -108,20 +114,21 @@ Phases are ordered by impact vs. effort. Each builds on the previous.
 
 ---
 
-### Phase 3 — Persistence & Multi-Session (Next Sprint)
+### Phase 3 — Persistence & Multi-Session ✅ Complete
 
 *Goal: Stop losing work on browser refresh. Essential before sharing with a second person.*
 
-| ID | Feature | Effort | Impact |
-|---|---|---|---|
-| 3.1 | **Persistent chat history** — save conversation turns to disk (`data/chats/{nb_id}.jsonl`); reload on notebook select | Small | 🔴 High |
-| 3.2 | **Per-notebook system prompt override** — let user set a custom instruction per notebook (e.g., "always respond in metric units") | Small | 🟡 Medium |
-| 3.3 | **Export conversation to PDF/MD** — download full chat session | Small | 🟡 Medium |
-| 3.4 | **Document version tracking** — store ingest timestamp; show "last updated" next to each source | Small | 🟡 Medium |
+| ID | Feature | Effort | Impact | Status |
+|---|---|---|---|---|
+| 3.1 | **Persistent chat history** — save conversation turns to disk (`data/chats/{nb_id}.jsonl`); reload on notebook select | Small | 🔴 High | ✅ Done |
+| 3.2 | **Per-notebook system prompt override** — user sets custom instructions per notebook (e.g., "always respond in metric units") | Small | 🟡 Medium | ✅ Done |
+| 3.3 | **Export conversation to Markdown** — download full chat session | Small | 🟡 Medium | ✅ Done |
+| 3.4 | **Document version tracking** — store ingest timestamp; show "last updated" next to each source | Small | 🟡 Medium | ✅ Done |
+| 3-UX | **Streaming UX fixes** — incremental DOM append; rAF-throttled scroll; copy button per answer | Small | 🟡 Medium | ✅ Done (bonus) |
 
 ---
 
-### Phase 3.5 — Notebook Intelligence Layer *(Founding Vision — Original to ManualIQ)*
+### Phase 3.5 — Notebook Intelligence Layer ✅ Core Complete *(Founding Vision — Original to ManualIQ)*
 
 *Goal: Each notebook stops being a passive document store and becomes an active intelligence agent that learns from its own query history, builds an internal map of what it knows, and self-optimises over time. This is the architectural concept that separates ManualIQ from any general-purpose RAG system.*
 
@@ -140,27 +147,27 @@ Each notebook maintains a persistent `data/maps/{nb_id}_query_map.json` file upd
 
 The map is a lightweight JSON — not a database — and survives server restarts. It is the notebook's long-term memory.
 
-| ID | Sub-feature | Effort | Impact |
-|---|---|---|---|
-| 3.5.1a | Write query map JSON after every chat turn | Small | 🔴 Core |
-| 3.5.1b | Track chunk utilisation frequency per source | Small | 🔴 Core |
-| 3.5.1c | Auto-cluster query terms into topic groups | Medium | 🟡 Medium |
-| 3.5.1d | Expose hot/cold section report in UI | Small | 🟡 Medium |
+| ID | Sub-feature | Effort | Impact | Status |
+|---|---|---|---|---|
+| 3.5.1a | Write query map JSON after every chat turn | Small | 🔴 Core | ✅ Done |
+| 3.5.1b | Track chunk utilisation frequency per source | Small | 🔴 Core | ✅ Done |
+| 3.5.1c | Auto-cluster query terms into topic groups | Medium | 🟡 Medium | ⏳ Pending |
+| 3.5.1d | Expose hot/cold section report in UI | Small | 🟡 Medium | ⏳ Pending |
 
 #### 3.5.2 — Learned Relevance Boost
 
 Chunks that have been retrieved and cited in past answers receive a small score multiplier on future queries with similar terms. The system learns *which parts of the manual actually answer questions* vs. parts that get retrieved but ignored.
 
 - Multiplier stored in the query map as `chunk_id → usage_count`
-- Applied as a final re-weighting step after BM25 + vector scoring
-- Decays slowly over time (prevents old queries from permanently dominating)
-- Capped to avoid runaway amplification (max 2× boost)
+- Applied as a rank-based nudge after BM25 + vector scoring (direction-agnostic)
+- Decays over time with 90-day e-folding (prevents old queries from permanently dominating)
+- Capped at 2× to avoid runaway amplification
 
-| ID | Sub-feature | Effort | Impact |
-|---|---|---|---|
-| 3.5.2a | Track chunk retrieval frequency in query map | Small | 🔴 Core |
-| 3.5.2b | Apply frequency multiplier in retrieval scorer | Small | 🔴 High |
-| 3.5.2c | Implement time-decay on usage scores | Small | 🟡 Medium |
+| ID | Sub-feature | Effort | Impact | Status |
+|---|---|---|---|---|
+| 3.5.2a | Track chunk retrieval frequency in query map | Small | 🔴 Core | ✅ Done |
+| 3.5.2b | Apply frequency multiplier in retrieval scorer | Small | 🔴 High | ✅ Done |
+| 3.5.2c | Implement time-decay on usage scores | Small | 🟡 Medium | ✅ Done |
 
 #### 3.5.3 — Notebook Memory Summary
 
@@ -168,50 +175,50 @@ After accumulating N queries, the LLM generates a concise natural-language summa
 
 - Injected into the system prompt as a "notebook personality" context block
 - Updated automatically every 20 queries or on demand
-- Readable by the user in the UI ("What does this notebook know?")
+- Readable by the user in the UI "🧠 Notebook Intelligence" sidebar panel
 
 *Example output:* `"This notebook covers the MAN B&W 6S60MC-C main engine. Strong coverage: fuel injection timing, turbocharger maintenance, crankshaft bearing clearances. Limited coverage: governor settings, exhaust valve overhaul."`
 
-| ID | Sub-feature | Effort | Impact |
-|---|---|---|---|
-| 3.5.3a | Generate memory summary via LLM after N queries | Medium | 🔴 High |
-| 3.5.3b | Inject summary into system prompt as context | Small | 🔴 High |
-| 3.5.3c | Show summary in UI "Notebook Intelligence" panel | Small | 🟡 Medium |
-| 3.5.3d | Manual regenerate button for user | Tiny | 🟡 Medium |
+| ID | Sub-feature | Effort | Impact | Status |
+|---|---|---|---|---|
+| 3.5.3a | Generate memory summary via LLM after N queries | Medium | 🔴 High | ✅ Done |
+| 3.5.3b | Inject summary into system prompt as context | Small | 🔴 High | ✅ Done |
+| 3.5.3c | Show summary in UI "Notebook Intelligence" panel | Small | 🟡 Medium | ✅ Done |
+| 3.5.3d | Manual regenerate button for user | Tiny | 🟡 Medium | ✅ Done |
 
 #### 3.5.4 — Isolated Per-Notebook Chat History
 
 Chat history is stored separately per notebook, never shared, never mixed.
 
-- Storage: `data/chats/{nb_id}/sessions.jsonl` — append-only, one line per turn
-- Each turn records: timestamp, question, answer, chunks cited, retrieval mode
-- History feeds the query map (source of truth for topic clusters and chunk usage)
+- Storage: `data/chats/{nb_id}.jsonl` — append-only, one line per turn
+- Each turn records: timestamp, question, answer, citations, retrieval mode
+- History feeds the query map (source of truth for chunk usage)
 - History never influences retrieval in a *different* notebook — strict isolation
-- UI shows past sessions per notebook; user can resume a previous session
+- UI replays past turns on notebook select
 
-| ID | Sub-feature | Effort | Impact |
-|---|---|---|---|
-| 3.5.4a | Write chat turns to per-notebook JSONL | Small | 🔴 Core |
-| 3.5.4b | Load and display session history on notebook select | Medium | 🔴 High |
-| 3.5.4c | Resume previous session (inject history into context) | Small | 🟡 Medium |
-| 3.5.4d | Session list with timestamps in sidebar | Small | 🟡 Medium |
-| 3.5.4e | Delete / archive individual sessions | Small | 🟢 Low |
+| ID | Sub-feature | Effort | Impact | Status |
+|---|---|---|---|---|
+| 3.5.4a | Write chat turns to per-notebook JSONL | Small | 🔴 Core | ✅ Done (merged with 3.1) |
+| 3.5.4b | Load and display history on notebook select | Medium | 🔴 High | ✅ Done |
+| 3.5.4c | Resume previous session (inject history into context) | Small | 🟡 Medium | ⏳ Pending |
+| 3.5.4d | Session list with timestamps in sidebar | Small | 🟡 Medium | ⏳ Pending |
+| 3.5.4e | Delete / archive individual sessions | Small | 🟢 Low | ⏳ Pending |
 
 #### 3.5.5 — Retrieval Load Balancing
 
 When a notebook contains many sources (e.g., 10 manuals), a naive retriever lets large documents crowd out small ones — a 500-page manual drowns a 20-page technical bulletin. Load balancing ensures proportional representation.
 
-- **Source-proportional chunk budget**: each source gets a chunk budget proportional to its size (chunks per source / total chunks), scaled to top-k
+- **2× candidate pool**: retriever fetches `top_k * 2` results to give balancer a wider pool
 - **Minimum floor**: every selected source gets at least 1 chunk in context, regardless of size
 - **Query-type routing**: if the query map identifies the query as belonging to a known topic cluster, boost the sources most associated with that cluster
 - **Adaptive top-k**: for large notebooks (>500 chunks), dynamically increase top-k to maintain coverage without degrading latency
 
-| ID | Sub-feature | Effort | Impact |
-|---|---|---|---|
-| 3.5.5a | Compute per-source chunk budgets at retrieval time | Medium | 🔴 High |
-| 3.5.5b | Enforce minimum 1-chunk floor per selected source | Small | 🟡 Medium |
-| 3.5.5c | Query-type-to-source affinity routing from query map | Large | 🟡 Medium |
-| 3.5.5d | Adaptive top-k for large notebooks | Small | 🟡 Medium |
+| ID | Sub-feature | Effort | Impact | Status |
+|---|---|---|---|---|
+| 3.5.5a | Compute per-source chunk budgets at retrieval time | Medium | 🔴 High | ✅ Done |
+| 3.5.5b | Enforce minimum 1-chunk floor per selected source | Small | 🟡 Medium | ✅ Done |
+| 3.5.5c | Query-type-to-source affinity routing from query map | Large | 🟡 Medium | ⏳ Pending |
+| 3.5.5d | Adaptive top-k for large notebooks | Small | 🟡 Medium | ⏳ Pending |
 
 ---
 
@@ -308,7 +315,6 @@ When a notebook contains many sources (e.g., 10 manuals), a naive retriever lets
 
 | Feature | Why it fits ManualIQ | Planned Phase |
 |---|---|---|
-| **Persistent chat history per workspace** | Engineers reference yesterday's troubleshooting session; isolated per notebook | Phase 3.5.4 |
 | **REST API with scoped keys** | Integration with PMS, CMMS, SMS portals; automation pipelines | Phase 4 |
 | **Role-based access control (Admin / Engineer / Viewer)** | Chief Engineer manages system; crew queries only | Phase 5 |
 | **Cross-encoder reranking** | Improves multi-part technical queries; single model, offline | Phase 6.1 |
@@ -353,7 +359,7 @@ ManualIQ is a **vertical specialist** — built from the ground up for marine an
 **The correct competitive move is NOT to catch up to AnythingLLM on breadth.** The correct move is to:
 
 1. **Defend the domain moat** — deepen engineering intelligence (abbreviations, P&ID parsing, alarm cross-referencing, class society rule integration)
-2. **Close the deployment gaps** — multi-user, persistent history, REST API (Phases 3–5)
+2. **Close the deployment gaps** — multi-user, persistent history ✅, REST API (Phases 4–5)
 3. **Add targeted agentic features** — not general agents, but *marine-specific* ones (spare parts lookup, PMS integration, alarm-to-manual mapping)
 4. **Ship as an offline-first appliance** — one-command install, no cloud dependency, runs on a ruggedized laptop on a vessel at sea
 
@@ -361,6 +367,6 @@ The market AnythingLLM cannot easily enter — oil rigs, cargo vessels, navy ves
 
 ---
 
-*Last updated: 2026-03-31*
+*Last updated: 2026-04-01*
 *Gap analysis by: Claude Sonnet 4.6*
 *Notebook Intelligence Layer vision: ManualIQ founder*
