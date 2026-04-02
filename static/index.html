@@ -938,6 +938,7 @@ const State = {
   selectedSources: [],
   history:        [],     // [{role, content}]
   streaming:      false,
+  userScrolledUp:  false, // user intentionally scrolled up — pause auto-scroll
 };
 
 /* ── API ──────────────────────────────────────────────────── */
@@ -1384,11 +1385,11 @@ async function streamChat(nbId, message) {
   let reasoningBlock = null;
   let reasoningContent = null;
 
-  // Smart auto-scroll: only scroll if user is already near the bottom.
-  // Throttled via rAF so it never blocks keyboard events.
+  // Smart auto-scroll: only scroll if user hasn't intentionally scrolled up
+  // and is already near the bottom. Throttled via rAF to avoid blocking input.
   let _rafPending = false;
   function scheduleScroll() {
-    if (_rafPending) return;
+    if (_rafPending || State.userScrolledUp) return;
     _rafPending = true;
     requestAnimationFrame(() => {
       _rafPending = false;
@@ -1471,8 +1472,12 @@ async function streamChat(nbId, message) {
             const copyBtn = _makeCopyBtn(fullText);
             bubble.closest('.msg').appendChild(copyBtn);
           }
-          area.scrollTop = area.scrollHeight;
+          // Update citations first (may resize messages-area), then scroll
+          // after layout settles so scrollHeight is accurate.
           Render.updateCitations(evt.citations || []);
+          if (!State.userScrolledUp) {
+            requestAnimationFrame(() => { area.scrollTop = area.scrollHeight; });
+          }
           State.history.push({role: 'user',      content: message});
           State.history.push({role: 'assistant',  content: fullText});
 
@@ -1715,6 +1720,8 @@ const Actions = {
     if (!State.activeNbId) { Toast.show('Select a notebook first', 'error'); return; }
     input.value = '';
     autoResizeTextarea(input);
+    // New question — resume auto-scroll from the bottom
+    State.userScrolledUp = false;
     await streamChat(State.activeNbId, message);
   },
 
@@ -1894,8 +1901,17 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('remove-btn').addEventListener('click',
     () => Actions.removeSource());
 
+  // Track user scroll intent: if they scroll up, pause auto-scroll.
+  // Auto-scroll resumes when they scroll back within 60px of the bottom
+  // or when they submit a new question.
+  document.getElementById('messages-area').addEventListener('scroll', function () {
+    const atBottom = this.scrollHeight - this.scrollTop - this.clientHeight < 60;
+    State.userScrolledUp = !atBottom;
+  }, { passive: true });
+
   document.getElementById('new-chat-btn').addEventListener('click', () => {
     if (State.streaming) return; // don't clear mid-stream
+    State.userScrolledUp = false;
     State.history = [];
     const area = document.getElementById('messages-area');
     area.innerHTML = '<div id="empty-state"><span class="em-icon">📖</span>Select a notebook on the left, upload a PDF,<br>then ask any question about your manuals.</div>';
