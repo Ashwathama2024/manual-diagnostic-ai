@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from common import load_config, resolve_path
 from ingest import ingest_pdf
-from index import index_markdown, read_markdown, split_markdown
+from index import _link_siblings, index_markdown, read_markdown, split_markdown
 
 # Re-export query-layer helpers so server.py can import them from one place
 from query import init_retrieval, invalidate_chunk_cache  # noqa: F401
@@ -433,6 +433,8 @@ def rebuild_chunks_jsonl(nb_proc_dir: Path, chunks_path: Path, cfg: dict[str, An
             source_name=md_path.name, notebook_id=nb_id,
         )
         all_chunks.extend(chunks)
+
+    _link_siblings(all_chunks)
 
     chunks_path.parent.mkdir(parents=True, exist_ok=True)
     with chunks_path.open("w", encoding="utf-8") as f:

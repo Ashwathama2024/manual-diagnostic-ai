@@ -166,6 +166,38 @@ _ABBREV_MAP: dict[str, str] = {
 }
 
 
+def _abbrev_path() -> Path:
+    return resolve_path("data/abbreviations.json")
+
+
+def _load_user_abbreviations() -> None:
+    """Merge optional user-defined abbreviation expansions from disk."""
+    path = _abbrev_path()
+    if not path.exists():
+        return
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"[ManualIQ] Failed to load abbreviations from {path}: {exc}")
+        return
+    if not isinstance(payload, dict):
+        print(f"[ManualIQ] Ignoring abbreviations file with invalid format: {path}")
+        return
+
+    merged = 0
+    for key, value in payload.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            continue
+        norm_key = key.strip().lower()
+        norm_value = value.strip()
+        if not norm_key or not norm_value:
+            continue
+        _ABBREV_MAP[norm_key] = norm_value
+        merged += 1
+    if merged:
+        print(f"[ManualIQ] Loaded {merged} user abbreviations from {path}")
+
+
 def _expand_query(query: str) -> str:
     """Expand abbreviations and keep originals so both exact and expanded terms are embedded."""
     words = query.split()
@@ -241,6 +273,7 @@ async def _startup() -> None:
     _processed_dir.mkdir(parents=True, exist_ok=True)
     _chats_dir.mkdir(parents=True, exist_ok=True)
     _maps_dir.mkdir(parents=True, exist_ok=True)
+    _load_user_abbreviations()
 
     from ollama import Client
     _ollama_client = Client(host="http://127.0.0.1:11434")

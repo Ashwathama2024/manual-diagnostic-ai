@@ -313,6 +313,41 @@ def dedupe_by_id(chunks: list[dict[str, Any]], top_k: int) -> list[dict[str, Any
     return deduped
 
 
+def _expand_with_siblings(
+    ranked: list[dict[str, Any]],
+    chunks_by_id: dict[str, dict[str, Any]],
+    budget: int,
+) -> list[dict[str, Any]]:
+    """
+    Insert prev/next siblings adjacent to each ranked chunk.
+
+    Siblings inherit the parent's score so they don't disrupt downstream
+    citation indexing.  Total output is capped at budget.
+    Only Manual chunks are expanded (core knowledge has no sequential siblings).
+    """
+    seen: set[str] = {str(c.get("id", "")) for c in ranked}
+    result: list[dict[str, Any]] = []
+    for chunk in ranked:
+        result.append(chunk)
+        if chunk.get("provenance") == "Core Knowledge":
+            continue
+        for key in ("prev_chunk_id", "next_chunk_id"):
+            sib_id = str(chunk.get(key) or "")
+            if not sib_id or sib_id in seen:
+                continue
+            sib = chunks_by_id.get(sib_id)
+            if sib and sib.get("source") == chunk.get("source"):
+                seen.add(sib_id)
+                s = dict(sib)
+                s.setdefault("score", chunk.get("score", 0.0))
+                s["is_sibling"] = True
+                s.setdefault("provenance", chunk.get("provenance", "Manual"))
+                result.append(s)
+        if len(result) >= budget:
+            break
+    return result[:budget]
+
+
 def retrieve_hybrid(
     question: str,
     db_dir: str,
@@ -367,6 +402,14 @@ def retrieve_hybrid(
         chunk = dict(rrf_chunks[cid])
         chunk["score"] = round(score, 8)
         result.append(chunk)
+
+    # Sibling expansion: insert prev/next neighbors for each top-k Manual chunk.
+    # Budget = 2 × top_k so at most one sibling per ranked chunk can be admitted.
+    if notebook_id and chunks_path.exists():
+        all_nb_chunks = load_chunks(chunks_path, notebook_id)
+        chunks_by_id = {str(c.get("id", "")): c for c in all_nb_chunks if c.get("id")}
+        result = _expand_with_siblings(result, chunks_by_id, top_k * 2)
+
     return result
 
 

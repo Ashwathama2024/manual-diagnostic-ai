@@ -22,6 +22,25 @@ class ChunkRecord:
     headers: dict[str, str]
     notebook_id: str = ""
     chunk_type: str = "text"   # "text" | "figure" | "table"
+    prev_chunk_id: str = ""
+    next_chunk_id: str = ""
+
+
+def _link_siblings(chunks: list[ChunkRecord]) -> None:
+    """Set prev_chunk_id / next_chunk_id within the same (source, notebook_id) boundary."""
+    for i, chunk in enumerate(chunks):
+        prev = chunks[i - 1] if i > 0 else None
+        nxt  = chunks[i + 1] if i < len(chunks) - 1 else None
+        chunk.prev_chunk_id = (
+            prev.id
+            if prev and prev.source == chunk.source and prev.notebook_id == chunk.notebook_id
+            else ""
+        )
+        chunk.next_chunk_id = (
+            nxt.id
+            if nxt and nxt.source == chunk.source and nxt.notebook_id == chunk.notebook_id
+            else ""
+        )
 
 
 def read_markdown(path: Path) -> str:
@@ -174,6 +193,8 @@ def index_to_lancedb(
                     "headers": json.dumps(chunk.headers, ensure_ascii=True),
                     "notebook_id": chunk.notebook_id,
                     "chunk_type": chunk.chunk_type,
+                    "prev_chunk_id": chunk.prev_chunk_id,
+                    "next_chunk_id": chunk.next_chunk_id,
                 }
             )
 
@@ -186,6 +207,10 @@ def index_to_lancedb(
             table.add_columns({"notebook_id": "''"})
         if "chunk_type" not in table.schema.names:
             table.add_columns({"chunk_type": "'text'"})
+        if "prev_chunk_id" not in table.schema.names:
+            table.add_columns({"prev_chunk_id": "''"})
+        if "next_chunk_id" not in table.schema.names:
+            table.add_columns({"next_chunk_id": "''"})
         # Upsert: delete old rows for this (source, notebook_id), then add new
         sources_in_batch = {row["source"] for row in rows}
         safe_nb = notebook_id.replace("'", "''")
@@ -232,6 +257,7 @@ def index_markdown(
     if not chunks:
         return 0
 
+    _link_siblings(chunks)
     merge_jsonl(chunks, chunks_path, source_name=md_path.name, notebook_id=notebook_id)
     index_to_lancedb(chunks, db_dir, table_name, embedding_model, batch_size, notebook_id=notebook_id)
     return len(chunks)
@@ -292,6 +318,9 @@ def main() -> None:
     for i, chunk in enumerate(all_chunks):
         chunk.id = f"chunk-{i:08d}"
 
+    # Link siblings within each (source, notebook_id) boundary
+    _link_siblings(all_chunks)
+
     save_jsonl(all_chunks, chunks_output)
     log.info(f"Total chunks: {len(all_chunks)}")
     log.info(f"Chunk file: {chunks_output}")
@@ -333,6 +362,8 @@ def main() -> None:
                 "headers": json.dumps(chunk.headers, ensure_ascii=True),
                 "notebook_id": chunk.notebook_id,
                 "chunk_type": chunk.chunk_type,
+                "prev_chunk_id": chunk.prev_chunk_id,
+                "next_chunk_id": chunk.next_chunk_id,
             })
 
     existing_tables: list[str] = db.list_tables().tables
