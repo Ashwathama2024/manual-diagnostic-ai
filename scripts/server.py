@@ -502,14 +502,18 @@ async def list_core_books(category: str = "") -> dict[str, list[str]]:
 # ---------------------------------------------------------------------------
 @app.post("/api/notebooks/{nb_id}/upload")
 async def upload_source(nb_id: str, file: UploadFile = File(...)) -> StreamingResponse:
+    # Read file content eagerly — UploadFile temp file is closed once StreamingResponse
+    # takes over, causing "read of closed file" if we defer the read into the generator.
+    filename = file.filename or "upload.pdf"
+    content = await file.read()
     return StreamingResponse(
-        _ingest_generator(nb_id, file),
+        _ingest_generator(nb_id, filename, content),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
-async def _ingest_generator(nb_id: str, file: UploadFile) -> AsyncGenerator[str, None]:
+async def _ingest_generator(nb_id: str, filename: str, content: bytes) -> AsyncGenerator[str, None]:
     # 1. Validate notebook
     try:
         _require_notebook(nb_id)
@@ -522,7 +526,7 @@ async def _ingest_generator(nb_id: str, file: UploadFile) -> AsyncGenerator[str,
     _MAX_UPLOAD_MB  = 200
     _MAX_UPLOAD_BYTES = _MAX_UPLOAD_MB * 1024 * 1024
 
-    safe_name = Path(file.filename or "upload.pdf").name
+    safe_name = Path(filename).name
     file_ext  = Path(safe_name).suffix.lower()
 
     if file_ext not in _ALLOWED_EXTS:
@@ -537,7 +541,6 @@ async def _ingest_generator(nb_id: str, file: UploadFile) -> AsyncGenerator[str,
 
     yield _sse({"type": "progress", "msg": f"Saving {safe_name}…"})
     dest = nb_raw / safe_name
-    content = await file.read()
 
     if len(content) > _MAX_UPLOAD_BYTES:
         size_mb = len(content) / (1024 * 1024)
@@ -582,7 +585,10 @@ async def _ingest_generator(nb_id: str, file: UploadFile) -> AsyncGenerator[str,
 
     def _do_ingest() -> None:
         try:
-            md_path = ingest_file(dest, nb_proc, "docling", _cfg, _progress)
+            # Re-read config fresh per upload so changes to vision timeout / settings
+            # take effect without requiring a server restart.
+            fresh_cfg = load_config()
+            md_path = ingest_file(dest, nb_proc, "docling", fresh_cfg, _progress)
             ingest_result["md_path"] = md_path
         except Exception as exc:
             ingest_result["error"] = str(exc)

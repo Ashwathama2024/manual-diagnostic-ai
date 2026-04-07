@@ -19,6 +19,7 @@ indexing:
   overlap_chars: 200
   batch_size: 16
   pdf_pages_per_batch: 15
+  batch_overlap_pages: 2         # pages repeated between batches to preserve cross-boundary context
 
 retrieval:
   mode: hybrid
@@ -30,10 +31,9 @@ chat:
   history_turns: 6
 
 vision:
-  enabled: false             # CPU-only: disable by default (minicpm-v too slow on CPU)
-                             # Set true only when GPU is available or for small docs
-  timeout: 180               # seconds per image (minicpm-v on CPU needs ~2-3 min per image)
-  max_per_doc: 10            # cap to avoid runaway on diagram-heavy docs
+  enabled: true              # AMD iGPU via Vulkan (OLLAMA_VULKAN=1) — ~5-15s per image
+  timeout: 120               # 120s — handles sliced wide wiring diagrams (2-slice = ~90s on iGPU)
+  max_per_doc: 30            # raised from 10 — diagram-heavy manuals need higher cap
 
 runtime:
   # Tuned for 32 GB RAM laptop with 16 logical processors

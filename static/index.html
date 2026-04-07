@@ -357,6 +357,18 @@ body {
 }
 #empty-state .em-icon { font-size: 2rem; display: block; margin-bottom: 10px; }
 
+.history-notice {
+  text-align: center;
+  font-size: 0.78rem;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 12px;
+  margin: 8px auto;
+  width: fit-content;
+}
+
 /* Message bubbles */
 .msg { display: flex; flex-direction: column; max-width: 82%; }
 .msg.user { align-self: flex-end; align-items: flex-end; }
@@ -1568,12 +1580,24 @@ const Actions = {
       Render.sources(srcData.sources, State.selectedSources, srcData.timestamps || {});
       Render.stats(stats);
 
-      // Replay persisted chat history into the UI
+      // Replay persisted chat history into the UI.
+      // Full history stays on disk (JSONL) for map/memory intelligence.
+      // UI shows only the last 3 exchanges (6 turns) to avoid flooding the chat box.
+      // State.history is capped at the same 6 turns — backend ignores beyond history_turns anyway.
       if (history.length) {
         const area = document.getElementById('messages-area');
         const empty = area.querySelector('#empty-state');
         if (empty) empty.remove();
-        for (const turn of history) {
+        const DISPLAY_TURNS = 6; // 3 exchanges
+        const recentHistory = history.slice(-DISPLAY_TURNS);
+        if (history.length > DISPLAY_TURNS) {
+          const skipped = history.length - DISPLAY_TURNS;
+          const notice = document.createElement('div');
+          notice.className = 'history-notice';
+          notice.textContent = `↑ ${skipped} earlier exchange${skipped > 1 ? 's' : ''} saved in history`;
+          area.appendChild(notice);
+        }
+        for (const turn of recentHistory) {
           Render.appendMessage('user', turn.role_user, false, true);
           Render.appendMessage('assistant', turn.role_assistant, false, true);
           State.history.push({role: 'user',      content: turn.role_user});

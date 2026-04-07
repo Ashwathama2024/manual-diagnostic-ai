@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from dataclasses import asdict, dataclass
 import logging
@@ -103,9 +104,15 @@ def split_markdown(
             else:
                 ctype = "text"
 
+            # Stable ID: hash of notebook + source + section + leading text.
+            # Survives re-indexing so query-map boost scores remain valid.
+            chunk_hash = hashlib.sha1(
+                f"{notebook_id}:{source_name}:{section_path}:{cleaned[:120]}".encode()
+            ).hexdigest()[:16]
+
             chunks.append(
                 ChunkRecord(
-                    id=f"chunk-{chunk_idx:08d}",
+                    id=f"chunk-{chunk_hash}",
                     text=cleaned,
                     source=source_name,
                     section_path=section_path,
@@ -314,10 +321,7 @@ def main() -> None:
     if not all_chunks:
         raise RuntimeError("No chunks produced. Check whether the Markdown files keep heading structure and section content.")
 
-    # Re-assign sequential IDs across all sources
-    for i, chunk in enumerate(all_chunks):
-        chunk.id = f"chunk-{i:08d}"
-
+    # IDs are stable content hashes — no re-assignment needed.
     # Link siblings within each (source, notebook_id) boundary
     _link_siblings(all_chunks)
 

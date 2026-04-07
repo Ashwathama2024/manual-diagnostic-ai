@@ -83,7 +83,7 @@ def _call_vision(img_bytes: bytes, context: str, model: str, timeout: int) -> st
         "prompt": prompt,
         "images": [b64],
         "stream": False,
-        "options": {"num_predict": 500, "temperature": 0.1},
+        "options": {"num_predict": 1000, "temperature": 0.1},
     }).encode()
 
     try:
@@ -98,6 +98,36 @@ def _call_vision(img_bytes: bytes, context: str, model: str, timeout: int) -> st
     except Exception as exc:
         log.warning("Vision caption failed (%s): %s", model, exc)
         return ""
+
+
+# ---------------------------------------------------------------------------
+# Inline figure placement helper
+# ---------------------------------------------------------------------------
+
+def _insert_figure_inline(md: str, caption_block: str, page_no: int | None, total_pages: int) -> str:
+    """Insert a figure caption block at its approximate page position in the markdown.
+
+    Uses the figure's page provenance to estimate a character offset, then snaps
+    to the nearest paragraph boundary so the caption sits near the surrounding text
+    rather than being dumped at the end of the document.
+
+    Falls back to end-of-document if page provenance is unavailable.
+    """
+    if page_no is None or total_pages <= 1 or not md:
+        return md + "\n\n" + caption_block
+
+    # Fraction through the document (0-indexed page → 0.0–1.0)
+    frac = max(0.0, (page_no - 1) / total_pages)
+    target = int(frac * len(md))
+
+    # Snap forward to the next paragraph break so we don't cut mid-sentence
+    insert_at = md.find("\n\n", target)
+    if insert_at == -1:
+        insert_at = len(md)
+    else:
+        insert_at += 2  # place after the blank line
+
+    return md[:insert_at] + caption_block + "\n\n" + md[insert_at:]
 
 
 # ---------------------------------------------------------------------------
@@ -133,11 +163,16 @@ def _build_markdown_python_api(
     vision_model: str,
     vision_timeout: int,
     max_images: int,
+    images_budget: list[int] | None = None,
 ) -> str:
     """
     Convert PDF using Docling Python API.
     Returns enhanced markdown string (may include vision-captioned figures).
     Raises ImportError if Docling Python package is unavailable.
+
+    images_budget: mutable single-element list [remaining_count] shared across
+    batch calls so the per-document cap applies to the whole document, not per batch.
+    When None a fresh budget of max_images is created (single-batch behaviour).
     """
     from docling.document_converter import DocumentConverter, PdfFormatOption
     from docling.datamodel.pipeline_options import PdfPipelineOptions
@@ -166,13 +201,18 @@ def _build_markdown_python_api(
         return md_content
 
     # ------------------------------------------------------------------
-    # Append figure captions as a dedicated section
+    # Inject figure captions inline at approximate page position
     # ------------------------------------------------------------------
     pictures = _pictures_from_doc(doc)
+    total_pages = max(len(getattr(doc, "pages", None) or {}), 1)
     log.info("[ingest] Found %d picture(s) in %s", len(pictures), pdf_path.name)
 
-    figure_blocks: list[str] = []
-    for idx, pic in enumerate(pictures[:max_images], 1):
+    budget = images_budget if images_budget is not None else [max_images]
+
+    for idx, pic in enumerate(pictures, 1):
+        if budget[0] <= 0:
+            log.info("[ingest] Image budget exhausted — skipping remaining figures")
+            break
         try:
             pil_img = pic.get_image(doc)
             if pil_img is None:
@@ -182,33 +222,39 @@ def _build_markdown_python_api(
             pil_img.save(buf, format="PNG")
             img_bytes = buf.getvalue()
 
-            log.info("[ingest]   Captioning figure %d/%d …",
-                     idx, min(len(pictures), max_images))
-            caption = _call_vision(img_bytes, "", vision_model, vision_timeout)
+            # Pass leading markdown as context so minicpm-v knows what section it's in
+            fig_global = max_images - budget[0] + 1
+            log.info("[ingest]   Captioning figure %d (budget remaining: %d)…",
+                     fig_global, budget[0])
+            caption = _call_vision(img_bytes, md_content[:800], vision_model, vision_timeout)
 
             if caption:
-                # Alt text from docling (caption attribute on PictureItem)
                 alt = getattr(pic, "caption", None) or getattr(pic, "text", None)
                 alt_text = str(alt).strip() if alt else ""
-                label = f"Figure {idx}" + (f": {alt_text}" if alt_text else "")
+                label = f"Figure {fig_global}" + (f": {alt_text}" if alt_text else "")
 
-                figure_blocks.append(
-                    f"<!-- FIGURE {idx} -->\n"
+                caption_block = (
+                    f"<!-- FIGURE {fig_global} -->\n"
                     f"**[{label}]**\n\n"
                     f"*Vision analysis:* {caption}"
                 )
-                log.info("[ingest]   Figure %d: %d chars", idx, len(caption))
+
+                # Get page provenance for inline placement
+                page_no: int | None = None
+                if hasattr(pic, "prov") and pic.prov:
+                    page_no = getattr(pic.prov[0], "page_no", None)
+
+                md_content = _insert_figure_inline(
+                    md_content, caption_block, page_no, total_pages
+                )
+                budget[0] -= 1
+                log.info("[ingest]   Figure %d: %d chars (page %s)",
+                         fig_global, len(caption), page_no)
             else:
                 log.warning("[ingest]   Figure %d: vision returned empty", idx)
 
         except Exception as exc:
             log.warning("[ingest]   Figure %d error: %s", idx, exc)
-
-    if figure_blocks:
-        md_content += (
-            "\n\n## Figures and Diagrams\n\n"
-            + "\n\n---\n\n".join(figure_blocks)
-        )
 
     return md_content
 
@@ -257,8 +303,16 @@ def _ingest_via_cli(pdf_path: Path, processed_dir: Path, docling_exe: str) -> Pa
 # PDF page-batch splitter  (RAM-safe large-file ingestion)
 # ---------------------------------------------------------------------------
 
-def split_pdf_pages(pdf_path: Path, pages_per_batch: int) -> tuple[list[Path], int]:
+def split_pdf_pages(
+    pdf_path: Path,
+    pages_per_batch: int,
+    overlap_pages: int = 2,
+) -> tuple[list[Path], int]:
     """Split a large PDF into smaller temp PDFs for RAM-safe Docling processing.
+
+    Each batch overlaps the previous one by `overlap_pages` pages so that
+    diagrams or text that straddle a batch boundary are seen in full context
+    by both Docling and the vision model.
 
     Returns (batch_paths, total_pages).
     If total pages <= pages_per_batch, returns ([pdf_path], total_pages) — no temp files.
@@ -282,17 +336,27 @@ def split_pdf_pages(pdf_path: Path, pages_per_batch: int) -> tuple[list[Path], i
     if total <= pages_per_batch:
         return [pdf_path], total
 
-    log.info("[ingest] PDF has %d pages — splitting into batches of %d", total, pages_per_batch)
+    overlap = max(0, min(overlap_pages, pages_per_batch - 1))
+    step = pages_per_batch - overlap  # advance by this many pages each batch
+
+    log.info(
+        "[ingest] PDF has %d pages — splitting into batches of %d (overlap=%d)",
+        total, pages_per_batch, overlap,
+    )
     batches: list[Path] = []
-    for start in range(0, total, pages_per_batch):
-        writer = PdfWriter()
+    start = 0
+    while start < total:
         end = min(start + pages_per_batch, total)
+        writer = PdfWriter()
         for p in range(start, end):
             writer.add_page(reader.pages[p])
         out = pdf_path.parent / f"{pdf_path.stem}__batch_{start:04d}.pdf"
         with open(out, "wb") as fh:
             writer.write(fh)
         batches.append(out)
+        if end == total:
+            break
+        start += step
 
     return batches, total
 
@@ -333,16 +397,20 @@ def ingest_pdf(
 
     vision_enabled, vision_model, vision_timeout, max_images = _vision_settings(cfg)
     pages_per_batch = int(cfg.get("indexing", {}).get("pdf_pages_per_batch", 15))
+    overlap_pages = int(cfg.get("indexing", {}).get("batch_overlap_pages", 2))
 
     # ── Attempt 1: Python API (with page-batch splitting) ────────────────
     try:
-        batches, total_pages = split_pdf_pages(pdf_path, pages_per_batch)
+        batches, total_pages = split_pdf_pages(pdf_path, pages_per_batch, overlap_pages)
         is_batched = len(batches) > 1
+
+        # Shared budget so the max_images cap applies across all batches, not per-batch
+        images_budget: list[int] = [max_images]
 
         md_parts: list[str] = []
         for idx, batch_path in enumerate(batches):
             if is_batched:
-                start_pg = idx * pages_per_batch + 1
+                start_pg = idx * (pages_per_batch - overlap_pages) + 1
                 end_pg = min(start_pg + pages_per_batch - 1, total_pages)
                 msg = f"Converting pages {start_pg}–{end_pg} of {total_pages}…"
                 _cb(msg)
@@ -351,7 +419,8 @@ def ingest_pdf(
                 _cb(f"Converting {pdf_path.name}…")
 
             part = _build_markdown_python_api(
-                batch_path, vision_enabled, vision_model, vision_timeout, max_images
+                batch_path, vision_enabled, vision_model, vision_timeout,
+                max_images, images_budget
             )
             md_parts.append(part)
 
@@ -531,14 +600,11 @@ def main() -> None:
         pdf_path = require_path(resolve_path(args.input_pdf), "Input PDF")
         if args.output_md:
             output_md = resolve_path(args.output_md)
-            tmp_dir = output_md.parent / "_docling_tmp"
-            tmp_dir.mkdir(parents=True, exist_ok=True)
-            temp_root = output_md.parent / "_docling_runtime_tmp"
-            run_docling(pdf_path, tmp_dir, docling_exe, temp_root)
-            produced_md = select_markdown(tmp_dir, pdf_path.stem)
-            output_md.write_text(
-                produced_md.read_text(encoding="utf-8", errors="ignore"), encoding="utf-8"
-            )
+            output_md.parent.mkdir(parents=True, exist_ok=True)
+            # Route through ingest_pdf() so vision + batching are applied
+            tmp_out = ingest_pdf(pdf_path, output_md.parent, docling_exe, cfg)
+            if tmp_out.resolve() != output_md.resolve():
+                tmp_out.rename(output_md)
             print(f"Markdown written: {output_md}")
         else:
             out_md = ingest_pdf(pdf_path, processed_dir, docling_exe, cfg)

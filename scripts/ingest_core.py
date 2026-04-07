@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -12,6 +13,42 @@ from ingest import ingest_pdf
 from index import split_markdown
 
 log = logging.getLogger(__name__)
+
+
+def _core_checksum(markdowns: list[Path]) -> str:
+    """SHA-1 over sorted (path, mtime, size) of all core .md files.
+    Fast — no file reads needed. Changes if any file is added, removed, or modified.
+    """
+    h = hashlib.sha1()
+    for p in sorted(markdowns):
+        stat = p.stat()
+        h.update(f"{p}|{stat.st_mtime}|{stat.st_size}\n".encode())
+    return h.hexdigest()
+
+
+def _checksum_path(db_dir: Path) -> Path:
+    return db_dir / ".core_knowledge_checksum"
+
+
+def _is_index_fresh(markdowns: list[Path], db_dir: Path, table_name: str) -> bool:
+    """Return True if core_knowledge table exists and matches current file checksums."""
+    cksum_file = _checksum_path(db_dir)
+    if not cksum_file.exists():
+        return False
+    try:
+        import lancedb
+        db = lancedb.connect(str(db_dir))
+        if table_name not in db.list_tables().tables:
+            return False
+        stored = cksum_file.read_text(encoding="utf-8").strip()
+        current = _core_checksum(markdowns)
+        return stored == current
+    except Exception:
+        return False
+
+
+def _save_checksum(markdowns: list[Path], db_dir: Path) -> None:
+    _checksum_path(db_dir).write_text(_core_checksum(markdowns), encoding="utf-8")
 
 def process_core_knowledge(cfg, docling_exe):
     core_dir = resolve_path("core_knowledge/fundamentals")
@@ -51,6 +88,12 @@ def process_core_knowledge(cfg, docling_exe):
             
     # Now gather all MD files
     markdowns = list(core_dir.rglob("*.md"))
+
+    # Skip re-embedding if nothing has changed since last run
+    if _is_index_fresh(markdowns, db_dir, table_name):
+        log.info("Core knowledge index is up to date — skipping re-embedding.")
+        return
+
     all_chunks = []
     
     min_chars = int(cfg["indexing"]["min_chunk_chars"])
@@ -115,6 +158,7 @@ def process_core_knowledge(cfg, docling_exe):
     db.create_table(table_name, data=rows)
     
     log.info(f"Successfully indexed {len(rows)} core chunks to {table_name}")
+    _save_checksum(markdowns, db_dir)
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] [core] %(message)s")
